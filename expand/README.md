@@ -40,17 +40,23 @@ value, err := expand.Expand("${PATH}", nil, true)
 | 变量 | 来源 |
 | --- | --- |
 | `${HOME_DIR}` | `os.UserHomeDir()`：当前运行账号的主目录 |
+| `${HOME_CONFIG_DIR}` | 绝对主目录下的 `.config` |
 | `${TEMP_DIR}` | `os.TempDir()`：系统临时目录 |
 | `${USER_CONFIG_DIR}` | `os.UserConfigDir()`：当前用户的配置目录 |
 | `${USER_CACHE_DIR}` | `os.UserCacheDir()`：当前用户的缓存目录 |
+| `${NOW_WORK_DIR}` | `os.Getwd()`：调用时进程的当前工作目录 |
+| `${NOW_EXE_PATH}` | `os.Executable()`：启动当前进程的可执行文件路径 |
+| `${NOW_EXE_DIR}` | `filepath.Dir(os.Executable())`：当前可执行文件所在目录 |
 
-这些值由 Go 在当前操作系统上解析，因此具体路径随操作系统和运行账号而异。内置变量不能通过 map 覆盖。
+这些值由 Go 在当前操作系统上解析，因此具体路径随操作系统和运行账号而异。`${HOME_CONFIG_DIR}` 固定指主目录下的 `.config`，与平台默认的 `${USER_CONFIG_DIR}` 不同。`NOW_*` 的值表示调用展开函数时的宿主进程状态；`NOW_EXE_PATH` 可能受符号链接启动方式影响。内置变量不能通过 map 覆盖。
+
+内置目录变量始终返回绝对路径。如果 `os.UserHomeDir()` 或 `os.TempDir()` 返回相对路径，`expand` 会在展开时以进程当前工作目录为基准转换为绝对路径；转换失败会返回错误。
 
 将内置变量放入输入字符串即可使用；无需传入自定义变量 map，也无需开启环境变量展开：
 
 ```go
 directories, err := expand.Expand(
-	"home=${HOME_DIR}; temp=${TEMP_DIR}; config=${USER_CONFIG_DIR}; cache=${USER_CACHE_DIR}",
+	"home=${HOME_DIR}; homeConfig=${HOME_CONFIG_DIR}; temp=${TEMP_DIR}; config=${USER_CONFIG_DIR}; cache=${USER_CACHE_DIR}; work=${NOW_WORK_DIR}; exe=${NOW_EXE_PATH}; exeDir=${NOW_EXE_DIR}",
 	nil,
 	false,
 )
@@ -104,7 +110,7 @@ if err != nil {
 fmt.Println(configPath)
 ```
 
-只有路径开头的 `~/` 和 `~\` 会展开；单独的 `~`、`~other/` 和路径中间的 `~` 保持原样。普通文本、命令参数和环境变量值应继续使用 `Expand`。
+只有路径开头的 `~/` 和 `~\` 会展开；单独的 `~`、`~other/` 和路径中间的 `~` 保持原样。其余分隔符按当前操作系统解释；例如 Unix 上 `~\a\b` 中后续的反斜杠是普通字符。普通文本、命令参数和环境变量值应继续使用 `Expand`。
 
 ## 解析规则与错误
 

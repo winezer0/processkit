@@ -1,55 +1,19 @@
 # processkit
 
-`processkit` 是一个 Go module，提供路径变量展开、路径解析和外部进程执行三个独立子包。
+`processkit` 是一个 Go module，提供路径变量展开、路径解析和外部进程执行能力。
 
 要求 Go 1.25.5 或更高版本。
 
-| 子包 | 职责 |
-| --- | --- |
-| `expand` | 展开 `${NAME}`；提供常用系统目录变量，其他变量由调用方通过 map 显式传入 |
-| `pathresolver` | 将路径变量展开后，按候选根目录解析并检查目标 |
-| `processrunner` | 展开调用配置中的变量，直接执行程序并管理进程生命周期 |
+| 包 | 作用 | 文档 |
+| --- | --- | --- |
+| `expand` | 展开内置变量、调用方提供的变量，以及可选的环境变量。 | [expand README](expand/README.md) |
+| `pathresolver` | 按候选目录优先级解析路径，并检查目标类型和存在状态。 | [pathresolver README](pathresolver/README.md) |
+| `processrunner` | 执行外部程序，管理输出捕获、超时、异步状态和日志。 | [processrunner README](processrunner/README.md) |
 
-## 路径变量
+## 环境变量展开注意事项
 
-`expand.Expand` 支持以下内置变量：`${HOME_DIR}`、`${TEMP_DIR}`、`${USER_CONFIG_DIR}` 和 `${USER_CACHE_DIR}`。其他变量可显式传入；`pathresolver.Options.ExpandEnv` 默认为 `false`，设为 `true` 后可展开当前进程的环境变量：
+`expand.Expand`、`pathresolver` 和 `processrunner` 开启 `ExpandEnv` 后，未设置或值为空的环境变量都会展开为空字符串；
 
-```go
-resolved, err := pathresolver.Resolve("${APP_DIR}/configs/app.yaml", pathresolver.Options{
-	Kind:      pathresolver.KindFile,
-	Variables: map[string]string{"APP_DIR": appDirectory},
-	ExpandEnv: true,
-})
-```
+当前没有缺失变量报错模式。例如 `${MISSING}/etc` 在 Unix 上会变成 `/etc`，可能意外指向根目录下的位置。
 
-未找到的环境变量展开为空字符串。自定义变量值按字面值插入，不递归展开；变量展开不调用 shell。
-
-## 子进程环境值
-
-`processrunner.Invocation.Variables` 用于展开可执行文件、参数、工作目录和环境变量的值；`Environment` 则是要传给子进程的环境变量覆盖项：
-
-```go
-result, err := processrunner.Run(ctx, processrunner.Invocation{
-	Binary: "katana",
-	Environment: map[string]string{
-		"XDG_CONFIG_HOME": "${APP_DIR}/third",
-	},
-	Variables: map[string]string{
-		"APP_DIR": appDirectory,
-	},
-	ExpandEnv: true,
-})
-```
-
-`Invocation.ExpandEnv` 默认为 `false`；设为 `true` 后，命令字段和 `Environment` 的值也会从当前进程环境展开。`Environment` 会覆盖继承环境中的同名变量，环境变量名本身不会展开。命令参数直接传给可执行文件，不经过 shell。
-
-## 开发
-
-在仓库根目录运行：
-
-```sh
-go test ./...
-go vet ./...
-```
-
-module 导入路径为 `github.com/winezer0/processkit`。
+将环境变量用于路径、可执行文件或参数前，请由调用方确认所需变量已设置且非空。

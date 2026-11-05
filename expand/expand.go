@@ -11,19 +11,27 @@ import (
 
 const (
 	homeDirName       = "HOME_DIR"
+	homeConfigDirName = "HOME_CONFIG_DIR"
 	tempDirName       = "TEMP_DIR"
 	userConfigDirName = "USER_CONFIG_DIR"
 	userCacheDirName  = "USER_CACHE_DIR"
+	nowWorkDirName    = "NOW_WORK_DIR"
+	nowExePathName    = "NOW_EXE_PATH"
+	nowExeDirName     = "NOW_EXE_DIR"
 )
 
 var builtInNames = map[string]struct{}{
 	homeDirName:       {},
+	homeConfigDirName: {},
 	tempDirName:       {},
 	userConfigDirName: {},
 	userCacheDirName:  {},
+	nowWorkDirName:    {},
+	nowExePathName:    {},
+	nowExeDirName:     {},
 }
 
-// Expand replaces built-in directory variables and variables explicitly supplied by the caller.
+// Expand replaces built-in variables and variables explicitly supplied by the caller.
 // When expandEnv is true, ${NAME} expressions can also resolve from the process environment.
 // Variable values are inserted literally and are not recursively expanded.
 func Expand(input string, variables map[string]string, expandEnv bool) (string, error) {
@@ -43,6 +51,10 @@ func ExpandPath(input string, variables map[string]string, expandEnv bool) (stri
 		}
 		if homeDirectory == "" {
 			return "", fmt.Errorf("user home directory is empty")
+		}
+		homeDirectory, err = filepath.Abs(homeDirectory)
+		if err != nil {
+			return "", fmt.Errorf("make user home directory absolute: %w", err)
 		}
 		input = filepath.Join(homeDirectory, input[2:])
 	}
@@ -134,12 +146,31 @@ func builtInValue(name string) (string, bool, error) {
 	switch name {
 	case homeDirName:
 		value, err = os.UserHomeDir()
+	case homeConfigDirName:
+		var homeDirectory string
+		homeDirectory, err = os.UserHomeDir()
+		if err == nil {
+			if homeDirectory == "" {
+				return "", true, fmt.Errorf("built-in variable %q resolved to an empty home directory", name)
+			}
+			value = filepath.Join(homeDirectory, ".config")
+		}
 	case tempDirName:
 		value = os.TempDir()
 	case userConfigDirName:
 		value, err = os.UserConfigDir()
 	case userCacheDirName:
 		value, err = os.UserCacheDir()
+	case nowWorkDirName:
+		value, err = os.Getwd()
+	case nowExePathName:
+		value, err = os.Executable()
+	case nowExeDirName:
+		var executablePath string
+		executablePath, err = os.Executable()
+		if err == nil {
+			value = filepath.Dir(executablePath)
+		}
 	default:
 		return "", false, nil
 	}
@@ -148,6 +179,12 @@ func builtInValue(name string) (string, bool, error) {
 	}
 	if value == "" {
 		return "", true, fmt.Errorf("built-in variable %q resolved to an empty value", name)
+	}
+	if !filepath.IsAbs(value) {
+		value, err = filepath.Abs(value)
+		if err != nil {
+			return "", true, fmt.Errorf("resolve built-in variable %q to an absolute path: %w", name, err)
+		}
 	}
 	return value, true, nil
 }

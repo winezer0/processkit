@@ -46,7 +46,7 @@ func main() {
 
 ## 路径变量
 
-目标路径和候选目录字段支持 `${NAME}` 变量。内置变量为 `${HOME_DIR}`、`${TEMP_DIR}`、`${USER_CONFIG_DIR}` 和 `${USER_CACHE_DIR}`。其他变量可通过 `Options.Variables` 显式传入：
+目标路径和候选目录字段支持 `${NAME}` 变量。内置变量包括 `${HOME_DIR}`、`${HOME_CONFIG_DIR}`、`${TEMP_DIR}`、`${USER_CONFIG_DIR}`、`${USER_CACHE_DIR}`、`${NOW_WORK_DIR}`、`${NOW_EXE_PATH}` 和 `${NOW_EXE_DIR}`。`${HOME_CONFIG_DIR}` 固定指主目录下的 `.config`；`NOW_*` 表示展开时宿主进程的工作目录或可执行文件信息。其他变量可通过 `Options.Variables` 显式传入：
 
 ```go
 result, err := pathresolver.Resolve("${ENGINE_DIR}/config/katana.yaml", pathresolver.Options{
@@ -60,7 +60,7 @@ result, err := pathresolver.Resolve("${ENGINE_DIR}/config/katana.yaml", pathreso
 
 `Options.ExpandEnv` 默认为 `false`；设为 `true` 后，`${NAME}` 也会从当前进程环境展开。未设置的环境变量替换为空字符串；`$NAME` 始终保持原样。默认模式下未知变量、非法名称或空自定义值会返回错误。变量值按字面值插入，不递归展开。`Variables` 和 `ExpandEnv` 同样用于 `ProcessDir`、`WorkingDirectory`、`ExecutablePath` 和 `AdditionalBases` 中的路径。
 
-所有路径字段也支持以 `~/` 或 `~\` 开头的相对路径，并会展开到当前用户的主目录；单独的 `~` 和 `~other/` 不展开。
+所有路径字段也支持以 `~/` 或 `~\` 开头的相对路径，并会展开到当前用户的主目录。其余分隔符按当前操作系统解释；例如 Unix 上 `~\a\b` 中后续的反斜杠是普通字符。单独的 `~` 和 `~other/` 不展开。
 
 ## 解析顺序
 
@@ -190,7 +190,7 @@ source=executable-directory path=/opt/myapp/bin/settings.yaml reason=path does n
 
 ## 路径边界
 
-相对路径中的 `..` 不会被限制在候选根目录内。如果调用方需要将路径限制在某个目录之下，应额外进行边界校验。文件系统检查使用 `os.Stat`，会跟随符号链接。
+相对路径中的 `..` 不会被限制在候选根目录内；绝对路径也只检查自身，不受候选根目录约束。文件系统检查使用 `os.Stat`，会跟随符号链接。因此本包不提供目录沙箱保证：如果调用方需要将路径限制在某个目录之下，应在实际文件访问处额外进行边界校验，并考虑符号链接带来的越界情况。
 
 ## 开发与测试
 

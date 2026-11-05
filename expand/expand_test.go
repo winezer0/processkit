@@ -3,6 +3,7 @@ package expand
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -12,7 +13,23 @@ func TestExpand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	homeDirAbs, err := filepath.Abs(homeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exePath, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	tempDir := os.TempDir()
+	tempDirAbs, err := filepath.Abs(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	userConfigDir, err := os.UserConfigDir()
 	if err != nil {
 		t.Fatal(err)
@@ -47,9 +64,9 @@ func TestExpand(t *testing.T) {
 		},
 		{
 			name:      "expands built-in and custom variables",
-			input:     "${HOME_DIR}|${TEMP_DIR}|${USER_CONFIG_DIR}|${USER_CACHE_DIR}|${APP_DIR}",
+			input:     "${HOME_DIR}|${HOME_CONFIG_DIR}|${TEMP_DIR}|${USER_CONFIG_DIR}|${USER_CACHE_DIR}|${NOW_WORK_DIR}|${NOW_EXE_PATH}|${NOW_EXE_DIR}|${APP_DIR}",
 			variables: map[string]string{"APP_DIR": "/srv/tanscan"},
-			want:      strings.Join([]string{homeDir, tempDir, userConfigDir, userCacheDir, "/srv/tanscan"}, "|"),
+			want:      strings.Join([]string{homeDirAbs, filepath.Join(homeDirAbs, ".config"), tempDirAbs, userConfigDir, userCacheDir, workDir, exePath, filepath.Dir(exePath), "/srv/tanscan"}, "|"),
 		},
 		{
 			name:      "inserts custom values literally without recursive expansion",
@@ -69,6 +86,51 @@ func TestExpand(t *testing.T) {
 				t.Errorf("Expand() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestExpandRelativeHomeDirectoryBecomesAbsolute(t *testing.T) {
+	homeEnvName := "HOME"
+	switch runtime.GOOS {
+	case "windows":
+		homeEnvName = "USERPROFILE"
+	case "plan9":
+		homeEnvName = "home"
+	}
+	relativeHome := filepath.Join("relative", "home")
+	t.Setenv(homeEnvName, relativeHome)
+	wantHome, err := filepath.Abs(relativeHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Expand("${HOME_DIR}|${HOME_CONFIG_DIR}", nil, false)
+	if err != nil {
+		t.Fatalf("Expand() error = %v", err)
+	}
+	want := wantHome + "|" + filepath.Join(wantHome, ".config")
+	if got != want {
+		t.Errorf("Expand() = %q, want %q", got, want)
+	}
+}
+
+func TestExpandRelativeTempDirectoryBecomesAbsolute(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		t.Skip("os.TempDir does not use TMPDIR on this platform")
+	}
+	relativeTemp := filepath.Join("relative", "temp")
+	t.Setenv("TMPDIR", relativeTemp)
+	want, err := filepath.Abs(relativeTemp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Expand("${TEMP_DIR}", nil, false)
+	if err != nil {
+		t.Fatalf("Expand() error = %v", err)
+	}
+	if got != want {
+		t.Errorf("Expand() = %q, want %q", got, want)
 	}
 }
 
@@ -222,6 +284,18 @@ func TestExpandErrors(t *testing.T) {
 			input:     "${HOME_DIR}",
 			variables: map[string]string{"HOME_DIR": "/tmp/override"},
 			wantError: `built-in variable "HOME_DIR" cannot be overridden`,
+		},
+		{
+			name:      "rejects overriding new built-in variables",
+			input:     "${HOME_CONFIG_DIR}",
+			variables: map[string]string{"HOME_CONFIG_DIR": "/tmp/override"},
+			wantError: `built-in variable "HOME_CONFIG_DIR" cannot be overridden`,
+		},
+		{
+			name:      "rejects overriding runtime built-in variables",
+			input:     "${NOW_WORK_DIR}",
+			variables: map[string]string{"NOW_WORK_DIR": "/tmp/override"},
+			wantError: `built-in variable "NOW_WORK_DIR" cannot be overridden`,
 		},
 	}
 

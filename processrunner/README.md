@@ -72,7 +72,11 @@ Unix 下，`Start` 和 `Run` 会在启动前为目标普通文件添加所有者
 
 `Start` 会复制参数切片和两个 map。`ExpandEnv` 开启时，`${NAME}` 可从 `Variables`、内置变量或当前进程环境中解析；未设置的环境变量替换为空字符串。始终只识别 `${NAME}`，`$NAME` 保持原样。环境变量名本身不会展开，也不会调用 shell。包没有标准输入配置；命令标准输入连接空设备，不用于交互式终端会话。
 
-`Binary` 和 `Directory` 支持以 `~/` 或 `~\` 开头的相对路径，并展开到当前用户主目录。`Args` 和 `Environment` 的值使用通用字符串展开，不处理 `~`。
+`Binary` 和 `Directory` 支持以 `~/` 或 `~\` 开头的相对路径，并展开到当前用户主目录。其余分隔符按当前操作系统解释；例如 Unix 上 `~\a\b` 中后续的反斜杠是普通字符。`Args` 和 `Environment` 的值使用通用字符串展开，不处理 `~`。
+
+内置变量包括 `${HOME_DIR}`、`${HOME_CONFIG_DIR}`、`${TEMP_DIR}`、`${USER_CONFIG_DIR}`、`${USER_CACHE_DIR}`、`${NOW_WORK_DIR}`、`${NOW_EXE_PATH}` 和 `${NOW_EXE_DIR}`。`${HOME_CONFIG_DIR}` 指主目录下的 `.config`；`NOW_*` 在展开时读取宿主进程的当前工作目录或可执行文件信息，并非子进程的 `Directory`。
+
+`Directory` 的相对路径相对于调用方进程的当前工作目录解析；`WithLogDirectory` 的相对日志目录也依赖该工作目录。工作目录变化可能改变它们指向的位置；需要稳定位置时请传入绝对路径。
 
 ## 异步执行与状态
 
