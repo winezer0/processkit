@@ -63,18 +63,16 @@ Unix 下，`Start` 和 `Run` 会在启动前为目标普通文件添加所有者
 | `Args` | 参数数组，不包含可执行文件名 |
 | `Directory` | 命令工作目录；空值继承当前目录，相对路径相对执行方当前目录解析 |
 | `Environment` | 环境变量 map；map 中的值覆盖继承环境中的同名变量 |
-| `Variables` | `${NAME}` 替换 map；用于展开 `Binary`、`Args`、`Directory` 和 `Environment` 的值 |
-| `ExpandEnv` | 默认为 `false`；设为 `true` 后，从当前进程环境展开这些字符串中的变量 |
 | `CaptureBytes` | 合并内存捕获上限；非正数使用 `DefaultCaptureBytes`（1 MiB） |
 | `LogBytes` | 每个磁盘输出流的上限；非正数使用 `DefaultLogBytes`（8 MiB） |
 | `RequireCompleteOutput` | 内存捕获不完整时附加 `ErrOutputLimit`；仅磁盘截断不会触发该错误 |
 | `Stdout` / `Stderr` | 可选原始输出 `io.Writer`，独立于捕获和磁盘上限 |
 
-`Start` 会复制参数切片和两个 map。`ExpandEnv` 开启时，`${NAME}` 可从 `Variables`、内置变量或当前进程环境中解析；未设置的环境变量替换为空字符串。始终只识别 `${NAME}`，`$NAME` 保持原样。环境变量名本身不会展开，也不会调用 shell。包没有标准输入配置；命令标准输入连接空设备，不用于交互式终端会话。
+`Start` 会复制参数切片和环境变量 map。`Binary`、`Args`、`Directory` 和 `Environment` 按原样传入执行层；变量展开由调用方在调用前完成。包不调用 shell。包没有标准输入配置；命令标准输入连接空设备，不用于交互式终端会话。
 
-`Binary` 和 `Directory` 支持以 `~/` 或 `~\` 开头的相对路径，并展开到当前用户主目录。其余分隔符按当前操作系统解释；例如 Unix 上 `~\a\b` 中后续的反斜杠是普通字符。`Args` 和 `Environment` 的值使用通用字符串展开，不处理 `~`。
+`processrunner` 不解析配置路径或展开变量。需要变量时，由调用方提前解析 `Binary`、`Directory`、参数和环境值；`Directory` 应使用调用方已确认的路径。
 
-内置变量包括 `${HOME_DIR}`、`${HOME_CONFIG_DIR}`、`${TEMP_DIR}`、`${USER_CONFIG_DIR}`、`${USER_CACHE_DIR}`、`${NOW_WORK_DIR}`、`${NOW_EXE_PATH}` 和 `${NOW_EXE_DIR}`。`${HOME_CONFIG_DIR}` 指主目录下的 `.config`；`NOW_*` 在展开时读取宿主进程的当前工作目录或可执行文件信息，并非子进程的 `Directory`。
+配置路径需要变量展开和候选目录查找时，调用顺序为 `expand` → `pathresolver` → `processrunner`。环境值和参数中的变量由调用方用 `expand.Expand` 提前处理。
 
 `Directory` 的相对路径相对于调用方进程的当前工作目录解析；`WithLogDirectory` 的相对日志目录也依赖该工作目录。工作目录变化可能改变它们指向的位置；需要稳定位置时请传入绝对路径。
 

@@ -18,8 +18,6 @@ type Source string
 const (
 	// SourceAbsolute identifies a directly checked absolute path.
 	SourceAbsolute Source = "absolute"
-	// SourceProcessDir identifies the caller-provided process directory.
-	SourceProcessDir Source = "process-dir"
 	// SourceWorkingDirectory identifies the current working directory.
 	SourceWorkingDirectory Source = "working-directory"
 	// SourceExecutableDirectory identifies the executable's directory.
@@ -36,15 +34,10 @@ type Candidate struct {
 
 // Options controls path validation and the ordered fallback bases.
 type Options struct {
-	ProcessDir       string
 	Kind             Kind
 	WorkingDirectory string
 	ExecutablePath   string
 	AdditionalBases  []Candidate
-	// Variables contains caller-approved values for ${NAME} expansion.
-	Variables map[string]string
-	// ExpandEnv enables expansion from the current process environment.
-	ExpandEnv bool
 }
 
 // Result describes the resolved absolute path, its source, and its existence state.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -31,20 +32,18 @@ var builtInNames = map[string]struct{}{
 	nowExeDirName:     {},
 }
 
+var variableExpression = regexp.MustCompile(`\$\{\s*([\w_]+)\s*\}`)
+var variableNameExpression = regexp.MustCompile(`^[\w_]+$`)
+
 // Expand replaces built-in variables and variables explicitly supplied by the caller.
 // When expandEnv is true, ${NAME} expressions can also resolve from the process environment.
+// When expandHome is true, a leading ~/ or ~\ prefix is replaced with the current user's home directory.
 // Variable values are inserted literally and are not recursively expanded.
-func Expand(input string, variables map[string]string, expandEnv bool) (string, error) {
+func Expand(input string, variables map[string]string, expandEnv, expandHome bool) (string, error) {
 	if err := validateVariables(variables); err != nil {
 		return "", err
 	}
-	return expandStrict(input, variables, expandEnv)
-}
-
-// ExpandPath expands a leading ~/ or ~\ current-user prefix and then expands variables.
-// Tilde prefixes elsewhere in the input are left unchanged.
-func ExpandPath(input string, variables map[string]string, expandEnv bool) (string, error) {
-	if len(input) >= 2 && input[0] == '~' && (input[1] == '/' || input[1] == '\\') {
+	if expandHome && len(input) >= 2 && input[0] == '~' && (input[1] == '/' || input[1] == '\\') {
 		homeDirectory, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("resolve user home directory: %w", err)
@@ -58,27 +57,15 @@ func ExpandPath(input string, variables map[string]string, expandEnv bool) (stri
 		}
 		input = filepath.Join(homeDirectory, input[2:])
 	}
-	return Expand(input, variables, expandEnv)
+	return expandStrict(input, variables, expandEnv)
 }
 
 func expandStrict(input string, variables map[string]string, expandEnv bool) (string, error) {
 	var output strings.Builder
-	for offset := 0; offset < len(input); {
-		if offset+1 >= len(input) || input[offset] != '$' || input[offset+1] != '{' {
-			output.WriteByte(input[offset])
-			offset++
-			continue
-		}
-
-		closeOffset := strings.IndexByte(input[offset+2:], '}')
-		if closeOffset < 0 {
-			return "", fmt.Errorf("unterminated variable expression at byte %d", offset)
-		}
-		closeOffset += offset + 2
-		name := input[offset+2 : closeOffset]
-		if !validName(name) {
-			return "", fmt.Errorf("invalid variable name %q", name)
-		}
+	lastOffset := 0
+	for _, match := range variableExpression.FindAllStringSubmatchIndex(input, -1) {
+		output.WriteString(input[lastOffset:match[0]])
+		name := strings.TrimSpace(input[match[2]:match[3]])
 
 		value, exists := variables[name]
 		if !exists {
@@ -101,9 +88,9 @@ func expandStrict(input string, variables map[string]string, expandEnv bool) (st
 		}
 
 		output.WriteString(value)
-		offset = closeOffset + 1
+		lastOffset = match[1]
 	}
-
+	output.WriteString(input[lastOffset:])
 	return output.String(), nil
 }
 
@@ -128,16 +115,7 @@ func validateVariables(variables map[string]string) error {
 }
 
 func validName(name string) bool {
-	if name == "" || name[0] < 'A' || name[0] > 'Z' {
-		return false
-	}
-	for index := 1; index < len(name); index++ {
-		character := name[index]
-		if (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '_' {
-			return false
-		}
-	}
-	return true
+	return variableNameExpression.MatchString(name)
 }
 
 func builtInValue(name string) (string, bool, error) {

@@ -43,6 +43,7 @@ func TestExpand(t *testing.T) {
 		name      string
 		input     string
 		variables map[string]string
+		expandHome bool
 		want      string
 	}{
 		{
@@ -54,6 +55,25 @@ func TestExpand(t *testing.T) {
 			name:      "expands custom variables",
 			input:     "${ENGINE_DIR}/katana",
 			variables: map[string]string{"ENGINE_DIR": "/opt/scanners"},
+			want:      "/opt/scanners/katana",
+		},
+		{
+			name:      "trims whitespace around variable names",
+			input:     "${ ENGINE_DIR }/katana",
+			variables: map[string]string{"ENGINE_DIR": "/opt/scanners"},
+			want:      "/opt/scanners/katana",
+		},
+		{
+			name:      "expands home prefix and variables in one call",
+			input:     "~/${ENGINE_DIR}/katana",
+			variables: map[string]string{"ENGINE_DIR": "third"},
+			expandHome: true,
+			want:      filepath.Join(homeDirAbs, "third", "katana"),
+		},
+		{
+			name:      "supports digits and underscores in variable names",
+			input:     "${ENGINE_DIR_2}/katana",
+			variables: map[string]string{"ENGINE_DIR_2": "/opt/scanners"},
 			want:      "/opt/scanners/katana",
 		},
 		{
@@ -78,7 +98,7 @@ func TestExpand(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := Expand(test.input, test.variables, false)
+			got, err := Expand(test.input, test.variables, false, test.expandHome)
 			if err != nil {
 				t.Fatalf("Expand() error = %v", err)
 			}
@@ -104,7 +124,7 @@ func TestExpandRelativeHomeDirectoryBecomesAbsolute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Expand("${HOME_DIR}|${HOME_CONFIG_DIR}", nil, false)
+	got, err := Expand("${HOME_DIR}|${HOME_CONFIG_DIR}", nil, false, false)
 	if err != nil {
 		t.Fatalf("Expand() error = %v", err)
 	}
@@ -125,7 +145,7 @@ func TestExpandRelativeTempDirectoryBecomesAbsolute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Expand("${TEMP_DIR}", nil, false)
+	got, err := Expand("${TEMP_DIR}", nil, false, false)
 	if err != nil {
 		t.Fatalf("Expand() error = %v", err)
 	}
@@ -183,7 +203,7 @@ func TestExpandEnvironmentOption(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := Expand(test.input, test.variables, test.expandEnv)
+			got, err := Expand(test.input, test.variables, test.expandEnv, false)
 			if test.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantError) {
 					t.Fatalf("Expand() error = %v, want substring %q", err, test.wantError)
@@ -200,7 +220,7 @@ func TestExpandEnvironmentOption(t *testing.T) {
 	}
 }
 
-func TestExpandPathHomePrefix(t *testing.T) {
+func TestExpandHomePrefix(t *testing.T) {
 	homeDirectory, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -218,14 +238,36 @@ func TestExpandPathHomePrefix(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := ExpandPath(test.input, nil, false)
+			got, err := Expand(test.input, nil, false, true)
 			if err != nil {
-				t.Fatalf("ExpandPath() error = %v", err)
+				t.Fatalf("Expand() error = %v", err)
 			}
 			if got != test.want {
-				t.Errorf("ExpandPath() = %q, want %q", got, test.want)
+				t.Errorf("Expand() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestExpandPreservesUnmatchedExpressions(t *testing.T) {
+	for _, input := range []string{"${NAME WITH SPACE}", "${NAME"} {
+		got, err := Expand(input, nil, false, false)
+		if err != nil {
+			t.Fatalf("Expand(%q) error = %v", input, err)
+		}
+		if got != input {
+			t.Errorf("Expand(%q) = %q, want original text", input, got)
+		}
+	}
+}
+
+func TestExpandHomeOptionDisabled(t *testing.T) {
+	got, err := Expand("~/configs/app.yaml", nil, false, false)
+	if err != nil {
+		t.Fatalf("Expand() error = %v", err)
+	}
+	if got != "~/configs/app.yaml" {
+		t.Fatalf("Expand() = %q, want unchanged tilde path", got)
 	}
 }
 
@@ -242,26 +284,6 @@ func TestExpandErrors(t *testing.T) {
 			wantError: `unknown variable "UNKNOWN"`,
 		},
 		{
-			name:      "unterminated expression",
-			input:     "${APP_DIR",
-			wantError: "unterminated variable expression",
-		},
-		{
-			name:      "empty variable name",
-			input:     "${}",
-			wantError: "invalid variable name",
-		},
-		{
-			name:      "lowercase variable name",
-			input:     "${app_dir}",
-			wantError: "invalid variable name",
-		},
-		{
-			name:      "invalid character in variable name",
-			input:     "${APP-DIR}",
-			wantError: "invalid variable name",
-		},
-		{
 			name:      "used custom variable has empty value",
 			input:     "${APP_DIR}",
 			variables: map[string]string{"APP_DIR": ""},
@@ -270,8 +292,8 @@ func TestExpandErrors(t *testing.T) {
 		{
 			name:      "rejects invalid unused custom variable",
 			input:     "plain text",
-			variables: map[string]string{"app_dir": "/srv/tanscan"},
-			wantError: `invalid variable name "app_dir"`,
+			variables: map[string]string{"APP-DIR": "/srv/tanscan"},
+			wantError: `invalid variable name "APP-DIR"`,
 		},
 		{
 			name:      "rejects empty unused custom variable",
@@ -301,7 +323,7 @@ func TestExpandErrors(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := Expand(test.input, test.variables, false)
+			_, err := Expand(test.input, test.variables, false, false)
 			if err == nil {
 				t.Fatalf("Expand() error = nil, want error containing %q", test.wantError)
 			}

@@ -18,19 +18,14 @@ go get github.com/winezer0/processkit/pathresolver@latest
 package main
 
 import (
-	"flag"
 	"log"
 
 	"github.com/winezer0/processkit/pathresolver"
 )
 
 func main() {
-	processDir := flag.String("process-dir", "", "process directory")
-	flag.Parse()
-
 	result, err := pathresolver.Resolve("plugins/templates", pathresolver.Options{
-		ProcessDir: *processDir,
-		Kind:       pathresolver.KindDirectory,
+		Kind: pathresolver.KindDirectory,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -42,38 +37,53 @@ func main() {
 }
 ```
 
-`ProcessDir` 是调用方指定的资源根目录，与当前工作目录和用户主目录是不同概念。包不读取配置文件，也不负责注册命令行参数。
+包不读取配置文件，也不负责注册命令行参数；相对路径默认从当前工作目录开始查找，再查找当前进程可执行文件所在目录。
 
 ## 路径变量
 
-目标路径和候选目录字段支持 `${NAME}` 变量。内置变量包括 `${HOME_DIR}`、`${HOME_CONFIG_DIR}`、`${TEMP_DIR}`、`${USER_CONFIG_DIR}`、`${USER_CACHE_DIR}`、`${NOW_WORK_DIR}`、`${NOW_EXE_PATH}` 和 `${NOW_EXE_DIR}`。`${HOME_CONFIG_DIR}` 固定指主目录下的 `.config`；`NOW_*` 表示展开时宿主进程的工作目录或可执行文件信息。其他变量可通过 `Options.Variables` 显式传入：
+`pathresolver` 不负责展开路径。调用方应先用 `expand` 处理 `~` 和变量，再将展开后的路径传给 `Resolve`。`expand` 提供 `${HOME_DIR}`、`${HOME_CONFIG_DIR}`、`${TEMP_DIR}`、`${USER_CONFIG_DIR}`、`${USER_CACHE_DIR}`、`${NOW_WORK_DIR}`、`${NOW_EXE_PATH}` 和 `${NOW_EXE_DIR}` 等内置变量，也支持调用方提供变量。环境变量展开默认关闭，只有调用方显式传入 `true` 时才启用。
 
 ```go
-result, err := pathresolver.Resolve("${ENGINE_DIR}/config/katana.yaml", pathresolver.Options{
-	Kind: pathresolver.KindFile,
-	Variables: map[string]string{
+package main
+
+import (
+	"fmt"
+
+	"github.com/winezer0/processkit/expand"
+	"github.com/winezer0/processkit/pathresolver"
+)
+
+func resolveEngineConfig(engineDirectory string) (string, error) {
+path, err := expand.Expand("${ENGINE_DIR}/config/katana.yaml", map[string]string{
 		"ENGINE_DIR": engineDirectory,
-	},
-	ExpandEnv: true,
-})
+}, false, true) // Keep ambient environment variable expansion disabled; expand a leading ~/ when present.
+	if err != nil {
+		return "", err
+	}
+	result, err := pathresolver.Resolve(path, pathresolver.Options{Kind: pathresolver.KindFile})
+	if err != nil {
+		return "", err
+	}
+	if !result.Exists {
+		return "", fmt.Errorf("config file does not exist: %s", result.Path)
+	}
+	return result.Path, nil
+}
 ```
 
-`Options.ExpandEnv` 默认为 `false`；设为 `true` 后，`${NAME}` 也会从当前进程环境展开。未设置的环境变量替换为空字符串；`$NAME` 始终保持原样。默认模式下未知变量、非法名称或空自定义值会返回错误。变量值按字面值插入，不递归展开。`Variables` 和 `ExpandEnv` 同样用于 `ProcessDir`、`WorkingDirectory`、`ExecutablePath` 和 `AdditionalBases` 中的路径。
-
-所有路径字段也支持以 `~/` 或 `~\` 开头的相对路径，并会展开到当前用户的主目录。其余分隔符按当前操作系统解释；例如 Unix 上 `~\a\b` 中后续的反斜杠是普通字符。单独的 `~` 和 `~other/` 不展开。
+先展开所有需要变量处理的路径字段，包括 `WorkingDirectory`、`ExecutablePath` 和 `AdditionalBases`；然后交给解析器进行候选目录查找和文件系统检查。解析器不会改写 `${NAME}`、`~` 或环境变量表达式。其余展开规则见 [expand README](../expand/README.md)。
 
 ## 解析顺序
 
 相对路径按以下顺序检查：
 
-1. `Options.ProcessDir`（为空时跳过）。
-2. `Options.WorkingDirectory`；为空时使用调用时的当前工作目录。
-3. `Options.ExecutablePath` 所在目录；为空时使用当前进程可执行文件所在目录。
-4. `Options.AdditionalBases`，按切片顺序检查。
+1. `Options.WorkingDirectory`；为空时使用调用时的当前工作目录。
+2. `Options.ExecutablePath` 所在目录；为空时使用当前进程可执行文件所在目录。
+3. `Options.AdditionalBases`，按切片顺序检查。
 
 每个根目录必须存在且是目录。找到首个存在并符合 `Kind` 的目标后立即返回。绝对路径只检查自身，不尝试其他根目录。路径会在每次调用时重新检查；默认不会向可执行文件目录的父目录搜索。
 
-解析结果始终是绝对路径。相对路径返回命中的根目录作为 `Base`；绝对路径的 `Base` 为空。`ProcessDir`、`ExecutablePath` 和 `AdditionalBases` 中的相对根路径相对于解析后的工作目录解析；相对 `WorkingDirectory` 则相对于进程当前工作目录解析。通常建议 `ProcessDir` 使用绝对路径。
+解析结果始终是绝对路径。相对路径返回命中的根目录作为 `Base`；绝对路径的 `Base` 为空。`ExecutablePath` 和 `AdditionalBases` 中的相对根路径相对于解析后的工作目录解析；相对 `WorkingDirectory` 则相对于进程当前工作目录解析。
 
 ## 目标类型
 
@@ -95,8 +105,8 @@ result, err := pathresolver.Resolve("${ENGINE_DIR}/config/katana.yaml", pathreso
 
 ```go
 result, err := pathresolver.Resolve("logs/app.log", pathresolver.Options{
-	ProcessDir: "/opt/myapp",
-	Kind:       pathresolver.KindFile,
+	WorkingDirectory: "/opt/myapp",
+	Kind:             pathresolver.KindFile,
 })
 if err != nil {
 	log.Fatal(err)
@@ -122,7 +132,7 @@ result, err := pathresolver.Resolve("templates", pathresolver.Options{
 })
 ```
 
-`Candidate.Source` 用于标记候选来源；省略时默认为 `SourceFallback`。标准来源值还有 `SourceAbsolute`、`SourceProcessDir`、`SourceWorkingDirectory` 和 `SourceExecutableDirectory`。
+`Candidate.Source` 用于标记候选来源；省略时默认为 `SourceFallback`。标准来源值还有 `SourceAbsolute`、`SourceWorkingDirectory` 和 `SourceExecutableDirectory`。
 
 ## 返回值与错误
 
@@ -135,12 +145,12 @@ result, err := pathresolver.Resolve("templates", pathresolver.Options{
 | `Source` | 命中的候选来源 |
 | `Exists` | 目标存在且符合 `Kind` 时为 `true`；目标缺失时为 `false` |
 
-例如，假设 `ProcessDir` 是 `/opt/myapp`，目标文件存在：
+例如，假设工作目录是 `/opt/myapp`，目标文件存在：
 
 ```go
 result, err := pathresolver.Resolve("config/app.yaml", pathresolver.Options{
-	ProcessDir: "/opt/myapp",
-	Kind:       pathresolver.KindFile,
+	WorkingDirectory: "/opt/myapp",
+	Kind:             pathresolver.KindFile,
 })
 if err != nil {
 	log.Fatal(err)
@@ -152,7 +162,7 @@ log.Printf("path=%s base=%s source=%s exists=%t",
 输出类似：
 
 ```text
-path=/opt/myapp/config/app.yaml base=/opt/myapp source=process-dir exists=true
+path=/opt/myapp/config/app.yaml base=/opt/myapp source=working-directory exists=true
 ```
 
 绝对路径直接检查自身。例如 `Resolve("/var/lib/myapp/cache.db", ...)` 在目标不存在时返回 `Path=/var/lib/myapp/cache.db`、`Base=""`、`Source=absolute`、`Exists=false`。
@@ -181,7 +191,6 @@ if err != nil {
 例如，`settings.yaml` 在进程目录中是目录，但调用方要求普通文件，且其他候选没有符合要求的目标时，错误诊断可能包含：
 
 ```text
-source=process-dir path=/opt/myapp/settings.yaml reason=path is not a regular file
 source=working-directory path=/work/settings.yaml reason=path does not exist
 source=executable-directory path=/opt/myapp/bin/settings.yaml reason=path does not exist
 ```

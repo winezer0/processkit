@@ -60,64 +60,6 @@ func helperInvocation(mode string) Invocation {
 	return Invocation{Name: "test-helper", Binary: os.Args[0], Args: []string{"-test.run=TestProcessHelper$"}, Environment: map[string]string{"PROCESSRUNNER_TEST_HELPER": mode}}
 }
 
-func TestExpandInvocationUsesEnvironmentWhenEnabled(t *testing.T) {
-	directory := t.TempDir()
-	t.Setenv("PROCESSRUNNER_EXPAND_BINARY", os.Args[0])
-	t.Setenv("PROCESSRUNNER_EXPAND_DIRECTORY", directory)
-	t.Setenv("PROCESSRUNNER_EXPAND_ARGUMENT", "expanded-argument")
-	t.Setenv("PROCESSRUNNER_EXPAND_VALUE", "expanded-value")
-
-	invocation := Invocation{
-		Binary:      "${PROCESSRUNNER_EXPAND_BINARY}",
-		Directory:   "${PROCESSRUNNER_EXPAND_DIRECTORY}",
-		Args:        []string{"${PROCESSRUNNER_EXPAND_ARGUMENT}"},
-		Environment: map[string]string{"CUSTOM": "${PROCESSRUNNER_EXPAND_VALUE}"},
-		ExpandEnv:   true,
-	}
-	if err := expandInvocation(&invocation); err != nil {
-		t.Fatalf("expandInvocation() error = %v", err)
-	}
-	if invocation.Binary != os.Args[0] || invocation.Directory != directory {
-		t.Fatalf("expanded binary/directory = %q/%q", invocation.Binary, invocation.Directory)
-	}
-	if len(invocation.Args) != 1 || invocation.Args[0] != "expanded-argument" {
-		t.Fatalf("expanded args = %#v", invocation.Args)
-	}
-	if invocation.Environment["CUSTOM"] != "expanded-value" {
-		t.Fatalf("expanded environment = %#v", invocation.Environment)
-	}
-}
-
-func TestExpandInvocationDoesNotExpandEnvironmentByDefault(t *testing.T) {
-	t.Setenv("PROCESSRUNNER_EXPAND_VALUE", "expanded-value")
-	invocation := Invocation{Binary: "${PROCESSRUNNER_EXPAND_VALUE}"}
-	if err := expandInvocation(&invocation); err == nil || !strings.Contains(err.Error(), `unknown variable "PROCESSRUNNER_EXPAND_VALUE"`) {
-		t.Fatalf("expandInvocation() error = %v, want unknown variable error", err)
-	}
-}
-
-func TestExpandInvocationExpandsTildeOnlyInPathFields(t *testing.T) {
-	homeDirectory, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	invocation := Invocation{
-		Binary:      "~/tool",
-		Directory:   "~\\work",
-		Args:        []string{"~/argument"},
-		Environment: map[string]string{"CUSTOM": "~/value"},
-	}
-	if err := expandInvocation(&invocation); err != nil {
-		t.Fatalf("expandInvocation() error = %v", err)
-	}
-	if invocation.Binary != filepath.Join(homeDirectory, "tool") || invocation.Directory != filepath.Join(homeDirectory, "work") {
-		t.Fatalf("expanded binary/directory = %q/%q", invocation.Binary, invocation.Directory)
-	}
-	if invocation.Args[0] != "~/argument" || invocation.Environment["CUSTOM"] != "~/value" {
-		t.Fatalf("non-path tilde values changed: args=%#v environment=%#v", invocation.Args, invocation.Environment)
-	}
-}
-
 // TestRunRecordsBoundedLogs exercises completion, exit codes, capture caps, and file caps.
 func TestRunRecordsBoundedLogs(t *testing.T) {
 	for _, test := range []struct {

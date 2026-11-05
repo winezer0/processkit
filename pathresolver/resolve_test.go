@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/winezer0/processkit/expand"
 )
 
 func TestResolveAbsolutePathDirectly(t *testing.T) {
 	target := writeFile(t, t.TempDir(), "asset.yaml")
-	result, err := Resolve(target, Options{ProcessDir: filepath.Join(t.TempDir(), "missing"), Kind: KindFile})
+	result, err := Resolve(target, Options{Kind: KindFile})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -22,39 +24,19 @@ func TestResolveAbsolutePathDirectly(t *testing.T) {
 	}
 }
 
-func TestResolveExpandsEnvironmentVariablesWhenEnabled(t *testing.T) {
-	t.Setenv("PROCESSKIT_PATHRESOLVER_DIR", t.TempDir())
-	result, err := Resolve("${PROCESSKIT_PATHRESOLVER_DIR}", Options{
-		Kind:      KindDirectory,
-		ExpandEnv: true,
-	})
+func TestResolveAcceptsCallerExpandedPath(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("PROCESSKIT_PATHRESOLVER_DIR", directory)
+	expanded, err := expand.Expand("${PROCESSKIT_PATHRESOLVER_DIR}", nil, true, true)
+	if err != nil {
+		t.Fatalf("Expand() error = %v", err)
+	}
+	result, err := Resolve(expanded, Options{Kind: KindDirectory})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
 	if !result.Exists {
 		t.Fatalf("Resolve() Exists = false, want true")
-	}
-}
-
-func TestResolveDoesNotExpandEnvironmentVariablesByDefault(t *testing.T) {
-	t.Setenv("PROCESSKIT_PATHRESOLVER_DIR", t.TempDir())
-	_, err := Resolve("${PROCESSKIT_PATHRESOLVER_DIR}", Options{Kind: KindDirectory})
-	if err == nil || !strings.Contains(err.Error(), `unknown variable "PROCESSKIT_PATHRESOLVER_DIR"`) {
-		t.Fatalf("Resolve() error = %v, want unknown variable error", err)
-	}
-}
-
-func TestResolveExpandsHomeRelativePath(t *testing.T) {
-	homeDirectory, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := Resolve("~/", Options{Kind: KindDirectory})
-	if err != nil {
-		t.Fatalf("Resolve() error = %v", err)
-	}
-	if result.Path != filepath.Clean(homeDirectory) || !result.Exists {
-		t.Fatalf("Resolve() = %#v, want existing home directory %q", result, homeDirectory)
 	}
 }
 
@@ -73,72 +55,12 @@ func TestResolveAbsoluteMissingPathDoesNotUseFallbacks(t *testing.T) {
 	base := t.TempDir()
 	writeFile(t, base, "missing.yaml")
 	target := filepath.Join(t.TempDir(), "missing.yaml")
-	result, err := Resolve(target, Options{ProcessDir: base, Kind: KindFile})
+	result, err := Resolve(target, Options{Kind: KindFile})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
 	if result.Path != target || result.Source != SourceAbsolute || result.Base != "" || result.Exists {
 		t.Fatalf("Resolve() = %#v, want missing absolute path without fallback", result)
-	}
-}
-
-func TestResolveUsesProcessDirBeforeWorkingDirectory(t *testing.T) {
-	home := t.TempDir()
-	workingDirectory := t.TempDir()
-	executableDirectory := t.TempDir()
-	writeFile(t, home, "asset.yaml")
-	writeFile(t, workingDirectory, "asset.yaml")
-	writeFile(t, executableDirectory, "asset.yaml")
-
-	result, err := Resolve("asset.yaml", Options{
-		ProcessDir:       home,
-		WorkingDirectory: workingDirectory,
-		ExecutablePath:   filepath.Join(executableDirectory, "app"),
-		Kind:             KindFile,
-	})
-	if err != nil {
-		t.Fatalf("Resolve() error = %v", err)
-	}
-	if result.Source != SourceProcessDir || result.Path != filepath.Join(home, "asset.yaml") {
-		t.Fatalf("Resolve() = %#v, want process directory candidate", result)
-	}
-}
-
-func TestResolveRelativeProcessDirUsesWorkingDirectory(t *testing.T) {
-	workingDirectory := t.TempDir()
-	home := filepath.Join("runtime", "home")
-	target := filepath.Join(workingDirectory, home, "asset.yaml")
-	writeFile(t, filepath.Join(workingDirectory, home), "asset.yaml")
-
-	result, err := Resolve("asset.yaml", Options{
-		ProcessDir:       home,
-		WorkingDirectory: workingDirectory,
-		Kind:             KindFile,
-	})
-	if err != nil {
-		t.Fatalf("Resolve() error = %v", err)
-	}
-	if result.Source != SourceProcessDir || result.Base != filepath.Dir(target) {
-		t.Fatalf("Resolve() = %#v, want relative process directory %q", result, filepath.Dir(target))
-	}
-}
-
-func TestResolveFallsBackFromInvalidProcessDirToWorkingDirectory(t *testing.T) {
-	workingDirectory := t.TempDir()
-	writeFile(t, workingDirectory, "asset.yaml")
-	homeFile := writeFile(t, t.TempDir(), "home-is-a-file")
-
-	result, err := Resolve("asset.yaml", Options{
-		ProcessDir:       homeFile,
-		WorkingDirectory: workingDirectory,
-		ExecutablePath:   filepath.Join(t.TempDir(), "bin", "app"),
-		Kind:             KindFile,
-	})
-	if err != nil {
-		t.Fatalf("Resolve() error = %v", err)
-	}
-	if result.Source != SourceWorkingDirectory {
-		t.Fatalf("Resolve() source = %q, want %q", result.Source, SourceWorkingDirectory)
 	}
 }
 
@@ -284,56 +206,54 @@ func TestResolveWorkingDirectoryAcceptsRelativeOverride(t *testing.T) {
 }
 
 func TestResolveChecksCurrentPathsOnEveryCall(t *testing.T) {
-	home := t.TempDir()
 	workingDirectory := t.TempDir()
-	writeFile(t, workingDirectory, "asset.yaml")
-	options := Options{ProcessDir: home, WorkingDirectory: workingDirectory, Kind: KindFile}
+	options := Options{WorkingDirectory: workingDirectory, Kind: KindFile}
 
 	first, err := Resolve("asset.yaml", options)
 	if err != nil {
 		t.Fatalf("first Resolve() error = %v", err)
 	}
-	if first.Source != SourceWorkingDirectory {
-		t.Fatalf("first Resolve() source = %q", first.Source)
+	if first.Exists || first.Source != SourceWorkingDirectory {
+		t.Fatalf("first Resolve() = %#v, want missing working-directory candidate", first)
 	}
-	writeFile(t, home, "asset.yaml")
+	target := writeFile(t, workingDirectory, "asset.yaml")
 
 	second, err := Resolve("asset.yaml", options)
 	if err != nil {
 		t.Fatalf("second Resolve() error = %v", err)
 	}
-	if second.Source != SourceProcessDir {
-		t.Fatalf("second Resolve() source = %q, want %q", second.Source, SourceProcessDir)
+	if second.Source != SourceWorkingDirectory || second.Path != target || !second.Exists {
+		t.Fatalf("second Resolve() = %#v, want newly created working-directory target", second)
 	}
 }
 
 func TestResolveFallsBackWhenTargetKindDoesNotMatch(t *testing.T) {
 	tests := []struct {
-		name        string
-		kind        Kind
-		homeKind    Kind
-		workingKind Kind
+		name           string
+		kind           Kind
+		workingKind    Kind
+		executableKind Kind
 	}{
-		{name: "directory required but home has file", kind: KindDirectory, homeKind: KindFile, workingKind: KindDirectory},
-		{name: "file required but home has directory", kind: KindFile, homeKind: KindDirectory, workingKind: KindFile},
+		{name: "directory required but working directory has file", kind: KindDirectory, workingKind: KindFile, executableKind: KindDirectory},
+		{name: "file required but working directory has directory", kind: KindFile, workingKind: KindDirectory, executableKind: KindFile},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			home := t.TempDir()
 			workingDirectory := t.TempDir()
-			createTarget(t, home, "asset", test.homeKind)
+			executableDirectory := t.TempDir()
+			createTarget(t, executableDirectory, "asset", test.executableKind)
 			createTarget(t, workingDirectory, "asset", test.workingKind)
 
 			result, err := Resolve("asset", Options{
-				ProcessDir:       home,
 				WorkingDirectory: workingDirectory,
+				ExecutablePath:   filepath.Join(executableDirectory, "app"),
 				Kind:             test.kind,
 			})
 			if err != nil {
 				t.Fatalf("Resolve() error = %v", err)
 			}
-			if result.Source != SourceWorkingDirectory {
-				t.Fatalf("Resolve() source = %q, want %q", result.Source, SourceWorkingDirectory)
+			if result.Source != SourceExecutableDirectory {
+				t.Fatalf("Resolve() source = %q, want %q", result.Source, SourceExecutableDirectory)
 			}
 		})
 	}
@@ -376,13 +296,12 @@ func TestResolveDoesNotSearchAboveExecutableDirectory(t *testing.T) {
 }
 
 func TestResolveErrorReportsRejectedCandidates(t *testing.T) {
-	processDirectory := t.TempDir()
-	if err := os.Mkdir(filepath.Join(processDirectory, "missing.yaml"), 0o700); err != nil {
+	workingDirectory := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workingDirectory, "missing.yaml"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Resolve("missing.yaml", Options{
-		ProcessDir:       processDirectory,
-		WorkingDirectory: t.TempDir(),
+		WorkingDirectory: workingDirectory,
 		ExecutablePath:   filepath.Join(t.TempDir(), "bin", "app"),
 		AdditionalBases:  []Candidate{{Path: filepath.Join(t.TempDir(), "missing")}},
 		Kind:             KindFile,
@@ -391,14 +310,15 @@ func TestResolveErrorReportsRejectedCandidates(t *testing.T) {
 	if !errors.As(err, &resolveError) {
 		t.Fatalf("Resolve() error = %v, want *ResolveError", err)
 	}
-	if len(resolveError.Failures) != 4 {
-		t.Fatalf("failure count = %d, want 4", len(resolveError.Failures))
+	if len(resolveError.Failures) != 3 {
+		t.Fatalf("failure count = %d, want 3", len(resolveError.Failures))
 	}
 	if !strings.Contains(err.Error(), "path is not a regular file") {
 		t.Fatalf("Resolve() error = %q, want candidate reasons", err)
 	}
-	if resolveError.Failures[3].Source != SourceFallback {
-		t.Fatalf("last failure source = %q, want %q", resolveError.Failures[3].Source, SourceFallback)
+	lastFailure := resolveError.Failures[len(resolveError.Failures)-1]
+	if lastFailure.Source != SourceFallback {
+		t.Fatalf("last failure source = %q, want %q", lastFailure.Source, SourceFallback)
 	}
 }
 
@@ -412,12 +332,10 @@ func TestResolveRejectsInvalidArguments(t *testing.T) {
 }
 
 func TestResolveReturnsFirstValidBaseWhenNoTargetExists(t *testing.T) {
-	home := t.TempDir()
 	workingDirectory := t.TempDir()
 	executableDirectory := t.TempDir()
 
 	result, err := Resolve("new/config.yaml", Options{
-		ProcessDir:       home,
 		WorkingDirectory: workingDirectory,
 		ExecutablePath:   filepath.Join(executableDirectory, "app"),
 		Kind:             KindFile,
@@ -425,8 +343,8 @@ func TestResolveReturnsFirstValidBaseWhenNoTargetExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if result.Path != filepath.Join(home, "new", "config.yaml") || result.Base != home || result.Source != SourceProcessDir {
-		t.Fatalf("Resolve() = %#v, want missing path under process directory", result)
+	if result.Path != filepath.Join(workingDirectory, "new", "config.yaml") || result.Base != workingDirectory || result.Source != SourceWorkingDirectory {
+		t.Fatalf("Resolve() = %#v, want missing path under working directory", result)
 	}
 	if result.Exists {
 		t.Fatal("Resolve() Exists = true, want false")
@@ -434,20 +352,20 @@ func TestResolveReturnsFirstValidBaseWhenNoTargetExists(t *testing.T) {
 }
 
 func TestResolveFindsExistingLaterCandidateBeforeMissingFallback(t *testing.T) {
-	home := t.TempDir()
 	workingDirectory := t.TempDir()
-	target := writeFile(t, workingDirectory, "config.yaml")
+	executableDirectory := t.TempDir()
+	target := writeFile(t, executableDirectory, "config.yaml")
 
 	result, err := Resolve("config.yaml", Options{
-		ProcessDir:       home,
 		WorkingDirectory: workingDirectory,
+		ExecutablePath:   filepath.Join(executableDirectory, "app"),
 		Kind:             KindFile,
 	})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if result.Path != target || result.Source != SourceWorkingDirectory || !result.Exists {
-		t.Fatalf("Resolve() = %#v, want existing working-directory target", result)
+	if result.Path != target || result.Source != SourceExecutableDirectory || !result.Exists {
+		t.Fatalf("Resolve() = %#v, want existing executable-directory target", result)
 	}
 }
 
@@ -463,14 +381,12 @@ func TestResolveAbsoluteMissingPath(t *testing.T) {
 }
 
 func TestResolveDoesNotHideExistingWrongKind(t *testing.T) {
-	home := t.TempDir()
 	workingDirectory := t.TempDir()
-	if err := os.Mkdir(filepath.Join(home, "config.yaml"), 0o700); err != nil {
+	if err := os.Mkdir(filepath.Join(workingDirectory, "config.yaml"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
 	_, err := Resolve("config.yaml", Options{
-		ProcessDir:       home,
 		WorkingDirectory: workingDirectory,
 		Kind:             KindFile,
 	})
@@ -481,12 +397,10 @@ func TestResolveDoesNotHideExistingWrongKind(t *testing.T) {
 }
 
 func TestResolveErrorsWhenEveryBaseIsInvalid(t *testing.T) {
-	baseFile := writeFile(t, t.TempDir(), "base-file")
 	workingDirectory := filepath.Join(t.TempDir(), "missing-working-directory")
 	executablePath := filepath.Join(t.TempDir(), "missing-bin", "app")
 
 	_, err := Resolve("config.yaml", Options{
-		ProcessDir:       baseFile,
 		WorkingDirectory: workingDirectory,
 		ExecutablePath:   executablePath,
 		Kind:             KindFile,

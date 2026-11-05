@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/winezer0/processkit/expand"
 )
 
 // Resolve checks an absolute path directly or polls ordered bases for a relative path.
@@ -19,17 +17,11 @@ func Resolve(path string, options Options) (Result, error) {
 	if !validKind(options.Kind) {
 		return Result{}, fmt.Errorf("unsupported path kind %d", options.Kind)
 	}
-	inputPath := path
-	var err error
-	path, err = expand.ExpandPath(path, options.Variables, options.ExpandEnv)
-	if err != nil {
-		return Result{}, fmt.Errorf("expand path: %w", err)
-	}
 	if filepath.IsAbs(path) {
 		absolutePath := filepath.Clean(path)
 		exists, reason, missing := inspectPathState(absolutePath, options.Kind)
 		if reason != "" && !missing {
-			return Result{}, newResolveError(inputPath, CandidateFailure{
+			return Result{}, newResolveError(path, CandidateFailure{
 				Source: SourceAbsolute,
 				Path:   absolutePath,
 				Reason: reason,
@@ -37,44 +29,10 @@ func Resolve(path string, options Options) (Result, error) {
 		}
 		return Result{Path: absolutePath, Source: SourceAbsolute, Exists: exists}, nil
 	}
-	if options.ProcessDir, err = expandOptionPath("process directory", options.ProcessDir, options.Variables, options.ExpandEnv); err != nil {
-		return Result{}, err
-	}
-	if options.WorkingDirectory, err = expandOptionPath("working directory", options.WorkingDirectory, options.Variables, options.ExpandEnv); err != nil {
-		return Result{}, err
-	}
-	if options.ExecutablePath, err = expandOptionPath("executable path", options.ExecutablePath, options.Variables, options.ExpandEnv); err != nil {
-		return Result{}, err
-	}
-	if len(options.AdditionalBases) > 0 {
-		options.AdditionalBases = append([]Candidate(nil), options.AdditionalBases...)
-		for index := range options.AdditionalBases {
-			options.AdditionalBases[index].Path, err = expandOptionPath(
-				fmt.Sprintf("additional base %d", index),
-				options.AdditionalBases[index].Path,
-				options.Variables,
-				options.ExpandEnv,
-			)
-			if err != nil {
-				return Result{}, err
-			}
-		}
-	}
-
-	failures := make([]CandidateFailure, 0, 4+len(options.AdditionalBases))
+	failures := make([]CandidateFailure, 0, 2+len(options.AdditionalBases))
 	var missingFallback *Result
 	missingFallbackBlocked := false
 	workingDirectory, workingDirectoryErr := resolveWorkingDirectory(options.WorkingDirectory)
-	if options.ProcessDir != "" {
-		if result, failure, missing := resolveFromBase(path, options.ProcessDir, workingDirectory, SourceProcessDir, options.Kind); failure != nil {
-			failures = append(failures, *failure)
-			rememberMissingFallback(&missingFallback, result, missing)
-			missingFallbackBlocked = missingFallbackBlocked || (!missing && result.Path != "")
-		} else {
-			return result, nil
-		}
-	}
-
 	if workingDirectoryErr != nil {
 		failures = append(failures, CandidateFailure{
 			Source: SourceWorkingDirectory,
@@ -118,15 +76,7 @@ func Resolve(path string, options Options) (Result, error) {
 	if missingFallback != nil && !missingFallbackBlocked {
 		return *missingFallback, nil
 	}
-	return Result{}, &ResolveError{Input: inputPath, Failures: failures}
-}
-
-func expandOptionPath(name, path string, variables map[string]string, expandEnv bool) (string, error) {
-	expanded, err := expand.ExpandPath(path, variables, expandEnv)
-	if err != nil {
-		return "", fmt.Errorf("expand %s: %w", name, err)
-	}
-	return expanded, nil
+	return Result{}, &ResolveError{Input: path, Failures: failures}
 }
 
 func rememberMissingFallback(fallback **Result, result Result, missing bool) {

@@ -4,14 +4,11 @@ package processrunner
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"sync"
 	"time"
-
-	"github.com/winezer0/processkit/expand"
 )
 
 const (
@@ -34,17 +31,13 @@ var ErrOutputLimit = errors.New("process output exceeds capture limit")
 type Invocation struct {
 	// Stdout and Stderr receive raw, uncapped output before redaction. The caller
 	// owns these writers until Done closes. Shared writers must be concurrency-safe.
-	Stdout      io.Writer `json:"-"`
-	Stderr      io.Writer `json:"-"`
-	Name        string
-	Binary      string
-	Args        []string
-	Directory   string
-	Environment map[string]string
-	// Variables supplies caller-approved values for ${NAME} expansion.
-	Variables map[string]string
-	// ExpandEnv enables expansion from the current process environment.
-	ExpandEnv             bool
+	Stdout                io.Writer `json:"-"`
+	Stderr                io.Writer `json:"-"`
+	Name                  string
+	Binary                string
+	Args                  []string
+	Directory             string
+	Environment           map[string]string
 	CaptureBytes          int
 	LogBytes              int
 	RequireCompleteOutput bool
@@ -130,10 +123,6 @@ func start(ctx context.Context, invocation Invocation, repairPermissions bool) (
 	// Copy caller-owned arguments and environment before execution can outlive this call.
 	invocation.Args = append([]string(nil), invocation.Args...)
 	invocation.Environment = cloneStringMap(invocation.Environment)
-	invocation.Variables = cloneStringMap(invocation.Variables)
-	if err := expandInvocation(&invocation); err != nil {
-		return nil, err
-	}
 	if err := validateEnvironment(invocation.Environment); err != nil {
 		return nil, err
 	}
@@ -184,29 +173,6 @@ func start(ctx context.Context, invocation Invocation, repairPermissions bool) (
 	handle := &Handle{state: state, cancel: cancel, done: make(chan struct{})}
 	go handle.waitProcess(runCtx, command, tree, logs, invocation)
 	return handle, nil
-}
-
-func expandInvocation(invocation *Invocation) error {
-	var err error
-	if invocation.Binary, err = expand.ExpandPath(invocation.Binary, invocation.Variables, invocation.ExpandEnv); err != nil {
-		return fmt.Errorf("expand process binary: %w", err)
-	}
-	if invocation.Directory, err = expand.ExpandPath(invocation.Directory, invocation.Variables, invocation.ExpandEnv); err != nil {
-		return fmt.Errorf("expand process directory: %w", err)
-	}
-	for index, argument := range invocation.Args {
-		invocation.Args[index], err = expand.Expand(argument, invocation.Variables, invocation.ExpandEnv)
-		if err != nil {
-			return fmt.Errorf("expand process argument %d: %w", index, err)
-		}
-	}
-	for _, name := range sortedEnvironmentNames(invocation.Environment) {
-		invocation.Environment[name], err = expand.Expand(invocation.Environment[name], invocation.Variables, invocation.ExpandEnv)
-		if err != nil {
-			return fmt.Errorf("expand process environment variable %q: %w", name, err)
-		}
-	}
-	return nil
 }
 
 // abortStart releases a partially started process before reporting startup failure.

@@ -12,8 +12,8 @@
 
 ## 环境变量展开注意事项
 
-`expand.Expand`、`pathresolver` 和 `processrunner` 开启 `ExpandEnv` 后，未设置或值为空的环境变量都会展开为空字符串；
+调用方先使用 `expand` 展开路径、参数和环境变量值，再把处理完成的路径交给 `pathresolver` 查找或 `processrunner` 执行。环境变量展开默认关闭，需要时由调用方显式开启；`pathresolver` 和 `processrunner` 都不展开变量。
 
-当前没有缺失变量报错模式。例如 `${MISSING}/etc` 在 Unix 上会变成 `/etc`，可能意外指向根目录下的位置。
+启用环境变量展开时，没有单独的缺失变量报错模式。例如 `${MISSING}/etc` 在 Unix 上会变成 `/etc`，可能意外指向根目录下的位置。
 
 将环境变量用于路径、可执行文件或参数前，请由调用方确认所需变量已设置且非空。
