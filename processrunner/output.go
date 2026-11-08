@@ -14,16 +14,22 @@ import (
 )
 
 type outputStream struct {
-	writer  io.Writer
-	mu      sync.Mutex
-	state   *execution
-	file    *os.File
-	limit   int
-	written int
-	secrets []string
-	pending string
-	retain  int
+	writer           io.Writer
+	mu               sync.Mutex
+	state            *execution
+	file             *os.File
+	limit            int
+	written          int
+	secrets          []string
+	pending          string
+	retain           int
+	source           ActivitySource
+	progressDetector ProgressDetector
+	progressLine     []byte
+	droppingLine     bool
 }
+
+const maxProgressLineBytes = 64 << 10
 
 type outputLogs struct {
 	stdout, stderr *outputStream
@@ -31,7 +37,11 @@ type outputLogs struct {
 }
 
 // openLogs creates optional disk logs while always enforcing bounded in-memory capture.
-func openLogs(ctx context.Context, limit int, state *execution, environment []string) (*outputLogs, error) {
+func openLogs(ctx context.Context, limit int, state *execution, environment []string, detectors ...ProgressDetector) (*outputLogs, error) {
+	var detector ProgressDetector
+	if len(detectors) > 0 {
+		detector = detectors[0]
+	}
 	secrets := []string{}
 	for _, entry := range environment {
 		name, value, ok := strings.Cut(entry, "=")
@@ -44,8 +54,8 @@ func openLogs(ctx context.Context, limit int, state *execution, environment []st
 	}
 	sort.Slice(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
 	logs := &outputLogs{}
-	logs.stdout = &outputStream{state: state, limit: limit, secrets: secrets}
-	logs.stderr = &outputStream{state: state, limit: limit, secrets: secrets}
+	logs.stdout = &outputStream{state: state, limit: limit, secrets: secrets, source: ActivityProcessStdout, progressDetector: detector}
+	logs.stderr = &outputStream{state: state, limit: limit, secrets: secrets, source: ActivityProcessStderr, progressDetector: detector}
 	if len(secrets) > 0 {
 		logs.stdout.retain, logs.stderr.retain = len(secrets[0])-1, len(secrets[0])-1
 	}
@@ -89,10 +99,11 @@ func (stream *outputStream) Write(data []byte) (int, error) {
 		}
 	}
 	if len(data) > 0 {
-		if err := stream.state.recordActivity(time.Now(), true); err != nil {
+		if err := stream.state.recordActivity(time.Now(), true, stream.source, stream.progressDetector == nil); err != nil {
 			return len(data), err
 		}
 	}
+	stream.observeProgress(data, false)
 	stream.pending += string(data)
 	for _, secret := range stream.secrets {
 		stream.pending = strings.ReplaceAll(stream.pending, secret, "[REDACTED]")
@@ -132,6 +143,52 @@ func (stream *outputStream) emit(data []byte) error {
 	return nil
 }
 
+// observeProgress frames output into lines, accepting both newline and
+// carriage-return progress formats while bounding memory for malformed output.
+// The caller holds stream.mu.
+func (stream *outputStream) observeProgress(data []byte, final bool) {
+	if stream.progressDetector == nil {
+		return
+	}
+	for _, value := range data {
+		if value == '\n' || value == '\r' {
+			stream.acceptProgressLine()
+			continue
+		}
+		if stream.droppingLine {
+			continue
+		}
+		if len(stream.progressLine) >= maxProgressLineBytes {
+			stream.progressLine = stream.progressLine[:0]
+			stream.droppingLine = true
+			continue
+		}
+		stream.progressLine = append(stream.progressLine, value)
+	}
+	if final {
+		stream.acceptProgressLine()
+	}
+}
+
+func (stream *outputStream) acceptProgressLine() {
+	if stream.droppingLine {
+		stream.droppingLine = false
+		stream.progressLine = stream.progressLine[:0]
+		return
+	}
+	line := strings.TrimSpace(string(stream.progressLine))
+	stream.progressLine = stream.progressLine[:0]
+	if line == "" {
+		return
+	}
+	stream.state.progressMu.Lock()
+	progress := stream.progressDetector(stream.source, line)
+	stream.state.progressMu.Unlock()
+	if progress {
+		stream.state.recordProgress(time.Now(), stream.source)
+	}
+}
+
 // flush drains retained redaction tails after both process streams close.
 func (logs *outputLogs) flush() error {
 	var errs []error
@@ -142,6 +199,7 @@ func (logs *outputLogs) flush() error {
 		stream.mu.Lock()
 		errs = append(errs, stream.emit([]byte(stream.pending)))
 		stream.pending = ""
+		stream.observeProgress(nil, true)
 		stream.mu.Unlock()
 	}
 	return errors.Join(errs...)

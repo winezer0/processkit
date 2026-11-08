@@ -34,11 +34,42 @@ const (
 	StopCanceled StopReason = "canceled"
 )
 
+// ActivitySource identifies a signal that can keep an idle process alive.
+type ActivitySource string
+
+const (
+	ActivityProcessStdout ActivitySource = "stdout"
+	ActivityProcessStderr ActivitySource = "stderr"
+	ActivityResultFiles   ActivitySource = "result_files"
+)
+
+// IdleCondition controls how selected activity sources are combined.
+type IdleCondition string
+
+const (
+	// IdleAllSources stops only after every selected source has been idle.
+	IdleAllSources IdleCondition = "all_idle"
+	// IdleAnySource stops after at least one selected source has been idle.
+	IdleAnySource IdleCondition = "any_idle"
+)
+
+// ProgressDetector reports whether a complete process output line represents
+// meaningful progress. It is called serially for stdout and stderr lines.
+// When configured, raw output bytes do not reset the idle timer; only lines
+// accepted by the detector do. The detector should be quick and should ignore
+// heartbeat-only or timestamp-only lines. It is used only when StopOnIdle is
+// enabled and may continue being called after Start returns.
+type ProgressDetector func(source ActivitySource, line string) bool
+
 // RunOptions configures activity observation and optional idle termination.
 type RunOptions struct {
-	ResultFiles []string
-	IdleTimeout time.Duration
-	StopOnIdle  bool
+	ResultFiles      []string
+	IdleTimeout      time.Duration
+	StopOnIdle       bool
+	IdleSources      []ActivitySource
+	IdleCondition    IdleCondition
+	StartupGrace     time.Duration
+	ProgressDetector ProgressDetector
 }
 
 // ErrOutputLimit prevents callers from parsing an incomplete command response.
@@ -139,6 +170,25 @@ func start(ctx context.Context, invocation Invocation, options RunOptions, repai
 	if options.IdleTimeout < 0 {
 		return nil, errors.New("idle timeout cannot be negative")
 	}
+	if options.StartupGrace < 0 {
+		return nil, errors.New("startup grace cannot be negative")
+	}
+	if options.IdleCondition != "" && options.IdleCondition != IdleAllSources && options.IdleCondition != IdleAnySource {
+		return nil, errors.New("idle condition must be all_idle or any_idle")
+	}
+	seenSources := make(map[ActivitySource]bool, len(options.IdleSources))
+	for _, source := range options.IdleSources {
+		if source != ActivityProcessStdout && source != ActivityProcessStderr && source != ActivityResultFiles {
+			return nil, errors.New("unknown idle activity source")
+		}
+		if seenSources[source] {
+			return nil, errors.New("idle activity sources cannot contain duplicates")
+		}
+		if source == ActivityResultFiles && len(options.ResultFiles) == 0 {
+			return nil, errors.New("result_files idle source requires configured result files")
+		}
+		seenSources[source] = true
+	}
 	for _, path := range options.ResultFiles {
 		if path == "" {
 			return nil, errors.New("result file paths cannot be empty")
@@ -149,6 +199,10 @@ func start(ctx context.Context, invocation Invocation, options RunOptions, repai
 		return nil, err
 	}
 	options.ResultFiles = resultFiles
+	options.IdleSources = append([]ActivitySource(nil), options.IdleSources...)
+	if !options.StopOnIdle {
+		options.ProgressDetector = nil
+	}
 	if invocation.CaptureBytes <= 0 {
 		invocation.CaptureBytes = DefaultCaptureBytes
 	}
@@ -162,9 +216,11 @@ func start(ctx context.Context, invocation Invocation, options RunOptions, repai
 		return nil, err
 	}
 	startedAt := time.Now().UTC()
-	state := &execution{snapshot: Snapshot{Name: invocation.Name, State: StateStarting, StartedAt: startedAt, LastActivityAt: &startedAt, ExitCode: -1}, captureLimit: invocation.CaptureBytes}
+	state := &execution{snapshot: Snapshot{Name: invocation.Name, State: StateStarting, StartedAt: startedAt, LastActivityAt: &startedAt, ExitCode: -1}, captureLimit: invocation.CaptureBytes, activityTimes: map[ActivitySource]time.Time{
+		ActivityProcessStdout: startedAt, ActivityProcessStderr: startedAt, ActivityResultFiles: startedAt,
+	}}
 	initialFileStates := snapshotFiles(options.ResultFiles)
-	logs, err := openLogs(ctx, invocation.LogBytes, state, environmentEntries(invocation.Environment))
+	logs, err := openLogs(ctx, invocation.LogBytes, state, environmentEntries(invocation.Environment), options.ProgressDetector)
 	if err != nil {
 		return nil, err
 	}
@@ -224,21 +280,29 @@ func abortStart(command *exec.Cmd, tree *processTree, logs *outputLogs, state *e
 }
 
 type execution struct {
-	mu           sync.Mutex
-	snapshot     Snapshot
-	output       []byte
-	captureLimit int
-	metadataPath string
-	lastSave     time.Time
+	mu            sync.Mutex
+	progressMu    sync.Mutex
+	snapshot      Snapshot
+	output        []byte
+	captureLimit  int
+	metadataPath  string
+	lastSave      time.Time
+	activityTimes map[ActivitySource]time.Time
 }
 
 // recordActivity updates activity timestamps and throttles metadata writes.
-func (state *execution) recordActivity(at time.Time, output bool) error {
+func (state *execution) recordActivity(at time.Time, output bool, source ActivitySource, countsForIdle bool) error {
 	state.mu.Lock()
 	value := at.UTC()
 	state.snapshot.LastActivityAt = &value
 	if output {
 		state.snapshot.LastOutputAt = &value
+	}
+	if countsForIdle {
+		if state.activityTimes == nil {
+			state.activityTimes = make(map[ActivitySource]time.Time)
+		}
+		state.activityTimes[source] = at
 	}
 	save := time.Since(state.lastSave) >= time.Second
 	if save {
@@ -249,6 +313,60 @@ func (state *execution) recordActivity(at time.Time, output bool) error {
 		return state.save()
 	}
 	return nil
+}
+
+// recordProgress updates only the idle timer; raw output timestamps continue to
+// describe all output, including heartbeat lines rejected by the detector.
+func (state *execution) recordProgress(at time.Time, source ActivitySource) {
+	state.mu.Lock()
+	if state.activityTimes == nil {
+		state.activityTimes = make(map[ActivitySource]time.Time)
+	}
+	state.activityTimes[source] = at
+	state.mu.Unlock()
+}
+
+func (state *execution) idleFor(options RunOptions, now time.Time) bool {
+	sources := options.IdleSources
+	if len(sources) == 0 {
+		sources = []ActivitySource{ActivityProcessStdout, ActivityProcessStderr}
+		if len(options.ResultFiles) > 0 {
+			sources = append(sources, ActivityResultFiles)
+		}
+	}
+	condition := options.IdleCondition
+	if condition == "" {
+		condition = IdleAllSources
+	}
+	state.mu.Lock()
+	startedAt := state.snapshot.StartedAt
+	activityTimes := make(map[ActivitySource]time.Time, len(sources))
+	for _, source := range sources {
+		activityTimes[source] = state.activityTimes[source]
+	}
+	state.mu.Unlock()
+	graceEnd := startedAt.Add(options.StartupGrace)
+	if now.Before(graceEnd) {
+		return false
+	}
+	anyIdle := false
+	allIdle := true
+	for _, source := range sources {
+		lastActivity := activityTimes[source]
+		if lastActivity.IsZero() {
+			lastActivity = startedAt
+		}
+		if lastActivity.Before(graceEnd) {
+			lastActivity = graceEnd
+		}
+		idle := now.Sub(lastActivity) >= options.IdleTimeout
+		anyIdle = anyIdle || idle
+		allIdle = allIdle && idle
+	}
+	if condition == IdleAnySource {
+		return anyIdle
+	}
+	return allIdle
 }
 
 func (state *execution) setStopReason(reason StopReason) {

@@ -77,8 +77,37 @@ Unix 下，`Start` 和 `Run` 会在启动前为目标普通文件添加所有者
 | `ResultFiles` | 调用方提供的结果文件路径；相对路径以 `Invocation.Directory` 为基准（为空时以当前目录为基准）；文件创建、大小或修改时间变化会刷新最近活动时间 |
 | `IdleTimeout` | 空闲停止阈值；仅在 `StopOnIdle` 开启时使用，必须为正数 |
 | `StopOnIdle` | 显式开启后，进程日志和所有结果文件持续无变化达到 `IdleTimeout` 时停止进程；默认 `false` |
+| `IdleSources` | 参与空闲判定的信号：`ActivityProcessStdout`、`ActivityProcessStderr`、`ActivityResultFiles`；空值沿用 stdout、stderr 和已配置结果文件的默认集合 |
+| `IdleCondition` | `IdleAllSources`（默认）要求所有选定来源都空闲；`IdleAnySource` 在任一来源空闲后停止 |
+| `StartupGrace` | 启动保护时间；保护期内不触发空闲停止，空闲计时最早从保护期结束开始 |
+| `ProgressDetector` | `StopOnIdle` 开启时可配置逐行判定器；stdout/stderr 只有被判定为有效进度的完整行才刷新对应空闲计时，原始输出仍会照常捕获和记录 |
 
 stdout/stderr 活动由进程管道直接记录，无需传入日志路径。结果文件活动每 250 毫秒轮询；启用空闲停止时，轮询间隔会缩短以匹配较短阈值。
+
+检测器收到 stdout/stderr 原始输出行，按换行符或回车符分行，并在 stdout/stderr 间串行调用。建议解析递增的扫描数、请求数或待处理数，忽略时间戳、心跳和重复计数。超过 64 KiB 的单行会被忽略，避免异常输出造成无界缓冲。未配置检测器时，保持现有行为：任何原始 stdout/stderr 输出都会刷新空闲计时。
+
+```go
+lastScanned := 0
+options := processrunner.RunOptions{
+    StopOnIdle: true,
+    IdleTimeout: 30 * time.Second,
+    IdleSources: []processrunner.ActivitySource{
+        processrunner.ActivityProcessStdout,
+        processrunner.ActivityResultFiles,
+    },
+    ProgressDetector: func(source processrunner.ActivitySource, line string) bool {
+        if source != processrunner.ActivityProcessStdout {
+            return false
+        }
+        scanned, ok := parseScannedCount(line) // 调用方按扫描器日志格式实现
+        if !ok || scanned <= lastScanned {
+            return false
+        }
+        lastScanned = scanned
+        return true
+    },
+}
+```
 
 `Start` 会复制参数切片和环境变量 map。`Binary`、`Args`、`Directory` 和 `Environment` 按原样传入执行层；变量展开由调用方在调用前完成。包不调用 shell。包没有标准输入配置；命令标准输入连接空设备，不用于交互式终端会话。
 

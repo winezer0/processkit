@@ -97,7 +97,7 @@ func (handle *Handle) waitProcess(ctx context.Context, command *exec.Cmd, tree *
 			currentFiles := snapshotFiles(options.ResultFiles)
 			if !sameFileSnapshots(fileStates, currentFiles) {
 				fileStates = currentFiles
-				if activityErr := handle.state.recordActivity(time.Now().UTC(), false); activityErr != nil {
+				if activityErr := handle.state.recordActivity(time.Now().UTC(), false, ActivityResultFiles, true); activityErr != nil {
 					stopErr := tree.terminate(command)
 					select {
 					case waitErr := <-done:
@@ -108,15 +108,8 @@ func (handle *Handle) waitProcess(ctx context.Context, command *exec.Cmd, tree *
 					goto processStopped
 				}
 			}
-			if options.StopOnIdle {
-				snapshot := handle.state.snapshotCopy()
-				lastActivity := snapshot.StartedAt
-				if snapshot.LastActivityAt != nil {
-					lastActivity = *snapshot.LastActivityAt
-				}
-				if time.Since(lastActivity) >= options.IdleTimeout {
-					handle.cancel(errStopOnIdle)
-				}
+			if options.StopOnIdle && handle.state.idleFor(options, time.Now().UTC()) {
+				handle.cancel(errStopOnIdle)
 			}
 		}
 	}

@@ -46,6 +46,21 @@ func TestProcessHelper(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 		time.Sleep(5 * time.Second)
+	case "log-heartbeat":
+		for {
+			fmt.Fprintf(os.Stdout, "heartbeat %d\n", time.Now().UnixNano())
+			time.Sleep(30 * time.Millisecond)
+		}
+	case "filtered-progress":
+		for progress := 1; progress <= 3; progress++ {
+			fmt.Fprintf(os.Stdout, "heartbeat %d\n", time.Now().UnixNano())
+			fmt.Fprintf(os.Stdout, "scanned: %d\n", progress)
+			time.Sleep(100 * time.Millisecond)
+		}
+		for {
+			fmt.Fprintf(os.Stdout, "heartbeat %d\n", time.Now().UnixNano())
+			time.Sleep(30 * time.Millisecond)
+		}
 	case "spawn":
 		child := exec.Command(os.Args[0], "-test.run=TestProcessHelper$")
 		child.Env = append(os.Environ(), "PROCESSRUNNER_TEST_HELPER=heartbeat")
