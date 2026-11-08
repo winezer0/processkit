@@ -18,7 +18,7 @@ func TestHandleCancellationAndWaiters(t *testing.T) {
 	invocation.Environment["PROCESSRUNNER_TEST_HEARTBEAT"] = path
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	handle, err := Start(WithLogDirectory(ctx, t.TempDir()), invocation)
+	handle, err := Start(WithLogDirectory(ctx, t.TempDir()), invocation, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,9 +65,30 @@ func TestHandleCancellationAndWaiters(t *testing.T) {
 	assertHeartbeatStopped(t, path)
 }
 
+func TestWaitDeadlineDoesNotStopProcess(t *testing.T) {
+	handle, err := Start(context.Background(), helperInvocation("spawn"), RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Stop()
+	waitCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if result, err := handle.Wait(waitCtx); !errors.Is(err, context.DeadlineExceeded) || result.FinishedAt != nil {
+		t.Fatalf("Wait() = (%#v, %v), want waiter deadline without final result", result, err)
+	}
+	if snapshot := handle.Snapshot(); snapshot.State != StateRunning || snapshot.FinishedAt != nil {
+		t.Fatalf("wait deadline stopped process: %#v", snapshot)
+	}
+	handle.Stop()
+	result, err := handle.Wait(context.Background())
+	if !errors.Is(err, context.Canceled) || result.State != StateCanceled {
+		t.Fatalf("final Wait() = (%#v, %v), want explicit cancellation", result, err)
+	}
+}
+
 // TestHandleResultCopies checks repeated waits and independent snapshot pointer fields.
 func TestHandleResultCopies(t *testing.T) {
-	handle, err := (ProcessRunner{}).Start(context.Background(), helperInvocation("output"))
+	handle, err := (ProcessRunner{}).Start(context.Background(), helperInvocation("output"), RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +112,7 @@ func TestHandleResultCopies(t *testing.T) {
 		t.Fatalf("second wait=%#v error=%v", second, err)
 	}
 	handle.Stop()
-	result, err := Run(context.Background(), helperInvocation("failed"))
+	result, err := Run(context.Background(), helperInvocation("failed"), RunOptions{})
 	var exitError *exec.ExitError
 	if !errors.As(err, &exitError) || exitError.ExitCode() != 7 {
 		t.Fatalf("original exit error not preserved: %v", err)
@@ -115,7 +136,7 @@ func TestStartFailures(t *testing.T) {
 		{"missing", context.Background(), Invocation{Binary: filepath.Join(t.TempDir(), "missing")}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if handle, err := Start(test.ctx, test.invocation); err == nil || handle != nil {
+			if handle, err := Start(test.ctx, test.invocation, RunOptions{}); err == nil || handle != nil {
 				t.Fatalf("start=%v,%v", handle, err)
 			}
 		})
@@ -124,11 +145,11 @@ func TestStartFailures(t *testing.T) {
 	if err := os.WriteFile(file, []byte("blocked"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Start(WithLogDirectory(context.Background(), file), helperInvocation("output")); err == nil {
+	if _, err := Start(WithLogDirectory(context.Background(), file), helperInvocation("output"), RunOptions{}); err == nil {
 		t.Fatal("file accepted as log directory")
 	}
 	directory := t.TempDir()
-	if _, err := Start(WithLogDirectory(context.Background(), directory), Invocation{Binary: file}); err == nil {
+	if _, err := Start(WithLogDirectory(context.Background(), directory), Invocation{Binary: file}, RunOptions{}); err == nil {
 		t.Fatal("invalid executable accepted")
 	}
 	entries, err := ReadLogs(directory, 1024)

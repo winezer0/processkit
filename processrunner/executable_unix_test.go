@@ -28,7 +28,7 @@ func TestStartRepairsExecutablePermission(t *testing.T) {
 				t.Setenv("PATH", directory)
 				invocation.Binary = "tool"
 			}
-			result, err := Run(context.Background(), invocation)
+			result, err := Run(context.Background(), invocation, RunOptions{})
 			if err != nil || string(result.Output) != "repaired" {
 				t.Fatalf("run output=%q err=%v", result.Output, err)
 			}
@@ -71,7 +71,7 @@ func TestStartDoesNotChmodDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(path, 0700) })
-	if _, err := Start(context.Background(), Invocation{Binary: path}); err == nil {
+	if _, err := Start(context.Background(), Invocation{Binary: path}, RunOptions{}); err == nil {
 		t.Fatal("directory accepted as executable")
 	}
 	info, err := os.Stat(path)

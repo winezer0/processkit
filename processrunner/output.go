@@ -88,6 +88,11 @@ func (stream *outputStream) Write(data []byte) (int, error) {
 			return n, io.ErrShortWrite
 		}
 	}
+	if len(data) > 0 {
+		if err := stream.state.recordActivity(time.Now(), true); err != nil {
+			return len(data), err
+		}
+	}
 	stream.pending += string(data)
 	for _, secret := range stream.secrets {
 		stream.pending = strings.ReplaceAll(stream.pending, secret, "[REDACTED]")
@@ -102,10 +107,8 @@ func (stream *outputStream) Write(data []byte) (int, error) {
 func (stream *outputStream) emit(data []byte) error {
 	state := stream.state
 	state.mu.Lock()
-	now := time.Now().UTC()
 	if len(data) > 0 {
 		state.snapshot.OutputBytes += int64(len(data))
-		state.snapshot.LastOutputAt = &now
 	}
 	available := max(0, state.captureLimit-len(state.output))
 	state.output = append(state.output, data[:min(available, len(data))]...)
@@ -125,15 +128,6 @@ func (stream *outputStream) emit(data []byte) error {
 		if err != nil {
 			return err
 		}
-	}
-	state.mu.Lock()
-	save := time.Since(state.lastSave) >= time.Second
-	if save {
-		state.lastSave = now
-	}
-	state.mu.Unlock()
-	if save {
-		return state.save()
 	}
 	return nil
 }

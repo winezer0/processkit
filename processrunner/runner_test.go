@@ -40,6 +40,12 @@ func TestProcessHelper(t *testing.T) {
 			_ = os.WriteFile(os.Getenv("PROCESSRUNNER_TEST_HEARTBEAT"), []byte(time.Now().String()), 0o600)
 			time.Sleep(30 * time.Millisecond)
 		}
+	case "log-activity":
+		for range 5 {
+			fmt.Fprint(os.Stdout, "activity")
+			time.Sleep(100 * time.Millisecond)
+		}
+		time.Sleep(5 * time.Second)
 	case "spawn":
 		child := exec.Command(os.Args[0], "-test.run=TestProcessHelper$")
 		child.Env = append(os.Environ(), "PROCESSRUNNER_TEST_HELPER=heartbeat")
@@ -50,7 +56,7 @@ func TestProcessHelper(t *testing.T) {
 			time.Sleep(time.Second)
 		}
 	case "owner":
-		_, _ = (ProcessRunner{}).Run(context.Background(), helperInvocation("spawn"))
+		_, _ = (ProcessRunner{}).Run(context.Background(), helperInvocation("spawn"), RunOptions{})
 	}
 	os.Exit(0)
 }
@@ -74,8 +80,8 @@ func TestRunRecordsBoundedLogs(t *testing.T) {
 			dir := t.TempDir()
 			invocation := helperInvocation(test.mode)
 			invocation.CaptureBytes, invocation.LogBytes = 64, 128
-			result, err := (ProcessRunner{}).Run(WithLogDirectory(context.Background(), dir), invocation)
-			if (err != nil) != (test.code != 0) || result.State != test.want || result.ExitCode != test.code {
+			result, err := (ProcessRunner{}).Run(WithLogDirectory(context.Background(), dir), invocation, RunOptions{})
+			if (err != nil) != (test.code != 0) || result.State != test.want || result.ExitCode != test.code || result.StopReason != StopExited {
 				t.Fatalf("result=%#v error=%v", result, err)
 			}
 			if len(result.Output) > 64 || result.Truncated != test.limit {
@@ -96,7 +102,7 @@ func TestRunRecordsBoundedLogs(t *testing.T) {
 	invocation := helperInvocation("large")
 	invocation.RequireCompleteOutput = true
 	invocation.CaptureBytes = 10
-	if _, err := (ProcessRunner{}).Run(context.Background(), invocation); !errors.Is(err, ErrOutputLimit) {
+	if _, err := (ProcessRunner{}).Run(context.Background(), invocation, RunOptions{}); !errors.Is(err, ErrOutputLimit) {
 		t.Fatalf("overflow=%v", err)
 	}
 }
@@ -105,19 +111,19 @@ func TestRunRecordsBoundedLogs(t *testing.T) {
 func TestRunHandlesCancellationAndStartupFailures(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := (ProcessRunner{}).Run(ctx, helperInvocation("output")); !errors.Is(err, context.Canceled) {
+	if _, err := (ProcessRunner{}).Run(ctx, helperInvocation("output"), RunOptions{}); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	if _, err := (ProcessRunner{}).Run(context.Background(), Invocation{}); err == nil {
+	if _, err := (ProcessRunner{}).Run(context.Background(), Invocation{}, RunOptions{}); err == nil {
 		t.Fatal("empty binary accepted")
 	}
-	if _, err := (ProcessRunner{}).Run(context.Background(), Invocation{Binary: filepath.Join(t.TempDir(), "missing")}); err == nil {
+	if _, err := (ProcessRunner{}).Run(context.Background(), Invocation{Binary: filepath.Join(t.TempDir(), "missing")}, RunOptions{}); err == nil {
 		t.Fatal("missing binary accepted")
 	}
 	ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	result, err := (ProcessRunner{}).Run(ctx, helperInvocation("spawn"))
-	if !errors.Is(err, context.DeadlineExceeded) || result.State != "timed_out" {
+	result, err := (ProcessRunner{}).Run(ctx, helperInvocation("spawn"), RunOptions{})
+	if err != nil || result.State != StateTimedOut || result.StopReason != StopDeadline {
 		t.Fatalf("timeout=%#v,%v", result, err)
 	}
 }
@@ -161,7 +167,7 @@ func TestRunCleansDescendantsAndUnexpectedOwnerExit(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		done := make(chan error, 1)
-		go func() { _, err := (ProcessRunner{}).Run(ctx, helperInvocation("spawn")); done <- err }()
+		go func() { _, err := (ProcessRunner{}).Run(ctx, helperInvocation("spawn"), RunOptions{}); done <- err }()
 		waitForHeartbeat(t, path)
 		cancel()
 		select {

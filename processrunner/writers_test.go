@@ -17,7 +17,7 @@ func TestRawWritersRemainComplete(t *testing.T) {
 			invocation := helperInvocation(mode)
 			invocation.Stdout, invocation.Stderr = &stdout, &stderr
 			invocation.CaptureBytes, invocation.LogBytes = 4, 8
-			result, err := Run(WithLogDirectory(t.Context(), t.TempDir()), invocation)
+			result, err := Run(WithLogDirectory(t.Context(), t.TempDir()), invocation, RunOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -48,7 +48,7 @@ func TestRawWriterDoesNotChangeRedaction(t *testing.T) {
 	invocation := helperInvocation("output")
 	invocation.Stdout = &stdout
 	invocation.Environment["TEST_TOKEN"] = "hello stdout"
-	result, err := Run(t.Context(), invocation)
+	result, err := Run(t.Context(), invocation, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestWriterFailuresPropagate(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			invocation := helperInvocation("large")
 			invocation.Stdout = failingOutputWriter{err: test.err}
-			result, err := Run(t.Context(), invocation)
+			result, err := Run(t.Context(), invocation, RunOptions{})
 			if !errors.Is(err, test.want) || result.State != StateFailed {
 				t.Fatalf("result=%#v error=%v", result, err)
 			}

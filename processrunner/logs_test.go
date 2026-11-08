@@ -24,7 +24,7 @@ func TestRelativeDirectory(t *testing.T) {
 	}
 	invocation := helperInvocation("cwd")
 	invocation.Directory = relative
-	result, err := Run(context.Background(), invocation)
+	result, err := Run(context.Background(), invocation, RunOptions{})
 	if err != nil {
 		t.Fatalf("cwd=%q error=%v", result.Output, err)
 	}

@@ -20,7 +20,7 @@ func TestEnvironmentMapOverridesInheritedValues(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			invocation := helperInvocation("environment")
 			invocation.Environment[environmentProbeVariable] = test.value
-			result, err := Run(t.Context(), invocation)
+			result, err := Run(t.Context(), invocation, RunOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -58,7 +58,7 @@ func TestStartRejectsInvalidEnvironmentMap(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			invocation := helperInvocation("output")
 			invocation.Environment[test.key] = test.value
-			if handle, err := Start(t.Context(), invocation); err == nil || handle != nil {
+			if handle, err := Start(t.Context(), invocation, RunOptions{}); err == nil || handle != nil {
 				t.Fatalf("Start() = %v, %v; want invalid environment error", handle, err)
 			}
 		})

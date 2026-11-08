@@ -16,7 +16,7 @@ import (
 func TestRegressionSignalExitPreservesStatus(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	result, err := Run(ctx, Invocation{Binary: "/bin/sh", Args: []string{"-c", "kill -TERM $$"}})
+	result, err := Run(ctx, Invocation{Binary: "/bin/sh", Args: []string{"-c", "kill -TERM $$"}}, RunOptions{})
 	var exitError *exec.ExitError
 	if !errors.As(err, &exitError) {
 		t.Fatalf("want signal ExitError, got %v", err)

@@ -135,7 +135,7 @@ func TestRegressionCancellationPreservesStateWithOutputLimit(t *testing.T) {
 			invocation := regressionInvocation("output-and-wait")
 			invocation.CaptureBytes = 64
 			invocation.RequireCompleteOutput = true
-			handle, err := Start(ctx, invocation)
+			handle, err := Start(ctx, invocation, RunOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -154,8 +154,11 @@ func TestRegressionCancellationPreservesStateWithOutputLimit(t *testing.T) {
 			waitCtx, stop := context.WithTimeout(t.Context(), 15*time.Second)
 			defer stop()
 			result, err := handle.Wait(waitCtx)
-			if !errors.Is(err, test.cause) || !errors.Is(err, ErrOutputLimit) {
-				t.Errorf("want both %v and ErrOutputLimit, got %v", test.cause, err)
+			if test.cause == context.Canceled && !errors.Is(err, context.Canceled) {
+				t.Errorf("want cancellation and ErrOutputLimit, got %v", err)
+			}
+			if !errors.Is(err, ErrOutputLimit) || (test.cause == context.DeadlineExceeded && errors.Is(err, context.DeadlineExceeded)) {
+				t.Errorf("deadline should be represented by StopReason; output error=%v", err)
 			}
 			if !result.Truncated || len(result.Output) != 64 || result.FinishedAt == nil {
 				t.Errorf("incomplete final result: state=%s captured=%d bytes=%d truncated=%v", result.State, len(result.Output), result.OutputBytes, result.Truncated)
@@ -195,10 +198,12 @@ func TestRegressionFinalMetadataFailureMarksExecutionFailed(t *testing.T) {
 		lastSave:     time.Now().Add(time.Hour),
 	}
 	logs := &outputLogs{stdout: &outputStream{state: state}, stderr: &outputStream{state: state}}
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
+	parentCtx, cancelTimeout := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancelTimeout()
+	ctx, cancel := context.WithCancelCause(parentCtx)
+	defer cancel(context.Canceled)
 	handle := &Handle{state: state, cancel: cancel, done: make(chan struct{})}
-	go handle.waitProcess(ctx, command, tree, logs, invocation)
+	go handle.waitProcess(ctx, command, tree, logs, invocation, RunOptions{})
 	// The wait must not share the execution context: waitProcess cancels the
 	// execution context before publishing Done as part of normal finalization.
 	waitCtx, stopWaiting := context.WithTimeout(t.Context(), 20*time.Second)
@@ -206,7 +211,7 @@ func TestRegressionFinalMetadataFailureMarksExecutionFailed(t *testing.T) {
 	result, err := handle.Wait(waitCtx)
 	// Ensure the owner goroutine finishes even if the test's wait context expires.
 	if result.FinishedAt == nil {
-		cancel()
+		cancel(context.Canceled)
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 15*time.Second)
 		defer stop()
 		_, _ = handle.Wait(cleanupCtx)
@@ -254,7 +259,7 @@ func TestRegressionSuccessfulParentCleansInheritedPipes(t *testing.T) {
 	invocation.Environment["PROCESSRUNNER_REGRESSION_HEARTBEAT"] = path
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	result, err := Run(ctx, invocation)
+	result, err := Run(ctx, invocation, RunOptions{})
 	if errors.Is(err, exec.ErrWaitDelay) {
 		t.Errorf("descendant-held pipes caused ErrWaitDelay after normal parent exit: %v", err)
 	}
@@ -275,7 +280,7 @@ func TestRegressionLargeBothStreamsDrain(t *testing.T) {
 	invocation.CaptureBytes, invocation.LogBytes = 128, 96
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	result, err := Run(WithLogDirectory(ctx, directory), invocation)
+	result, err := Run(WithLogDirectory(ctx, directory), invocation, RunOptions{})
 	if err != nil || result.State != StateSuccess || result.OutputBytes != 2<<20 || len(result.Output) != 128 || !result.Truncated {
 		t.Fatalf("drain result: state=%s bytes=%d captured=%d truncated=%v error=%v", result.State, result.OutputBytes, len(result.Output), result.Truncated, err)
 	}
@@ -296,7 +301,7 @@ func TestRegressionDiskOnlyTruncationAllowsCompleteCapture(t *testing.T) {
 	invocation.RequireCompleteOutput = true
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	result, err := Run(WithLogDirectory(ctx, t.TempDir()), invocation)
+	result, err := Run(WithLogDirectory(ctx, t.TempDir()), invocation, RunOptions{})
 	if err != nil || result.State != StateSuccess || !result.Truncated || string(result.Output) != strings.Repeat("a", 4096) {
 		t.Errorf("disk cap must not become ErrOutputLimit: state=%s captured=%d truncated=%v error=%v", result.State, len(result.Output), result.Truncated, err)
 	}

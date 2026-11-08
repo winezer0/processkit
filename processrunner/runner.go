@@ -24,6 +24,23 @@ const (
 	StateTimedOut       = "timed_out"
 )
 
+// StopReason describes what caused a process execution to finish.
+type StopReason string
+
+const (
+	StopExited   StopReason = "exited"
+	StopIdle     StopReason = "idle"
+	StopDeadline StopReason = "deadline"
+	StopCanceled StopReason = "canceled"
+)
+
+// RunOptions configures activity observation and optional idle termination.
+type RunOptions struct {
+	ResultFiles []string
+	IdleTimeout time.Duration
+	StopOnIdle  bool
+}
+
 // ErrOutputLimit prevents callers from parsing an incomplete command response.
 var ErrOutputLimit = errors.New("process output exceeds capture limit")
 
@@ -45,15 +62,17 @@ type Invocation struct {
 
 // Snapshot describes one execution without exposing arguments or environment values.
 type Snapshot struct {
-	Name         string     `json:"name"`
-	PID          int        `json:"pid"`
-	State        string     `json:"state"`
-	ExitCode     int        `json:"exit_code"`
-	StartedAt    time.Time  `json:"started_at"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
-	LastOutputAt *time.Time `json:"last_output_at,omitempty"`
-	OutputBytes  int64      `json:"output_bytes"`
-	Truncated    bool       `json:"truncated"`
+	Name           string     `json:"name"`
+	PID            int        `json:"pid"`
+	State          string     `json:"state"`
+	StopReason     StopReason `json:"stop_reason,omitempty"`
+	ExitCode       int        `json:"exit_code"`
+	StartedAt      time.Time  `json:"started_at"`
+	FinishedAt     *time.Time `json:"finished_at,omitempty"`
+	LastOutputAt   *time.Time `json:"last_output_at,omitempty"`
+	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
+	OutputBytes    int64      `json:"output_bytes"`
+	Truncated      bool       `json:"truncated"`
 }
 
 // Result contains a final snapshot and bounded combined stdout and stderr.
@@ -71,21 +90,21 @@ func WithLogDirectory(ctx context.Context, directory string) context.Context {
 
 // Runner is the synchronous contract consumed by command adapters.
 type Runner interface {
-	Run(context.Context, Invocation) (Result, error)
+	Run(context.Context, Invocation, RunOptions) (Result, error)
 }
 
 // AsyncRunner adds independently observable process handles.
 type AsyncRunner interface {
 	Runner
-	Start(context.Context, Invocation) (*Handle, error)
+	Start(context.Context, Invocation, RunOptions) (*Handle, error)
 }
 
 // ProcessRunner is safe for concurrent use and does not retain completed executions.
 type ProcessRunner struct{}
 
 // Run executes a command and waits for output draining and process cleanup.
-func (runner ProcessRunner) Run(ctx context.Context, invocation Invocation) (Result, error) {
-	handle, err := runner.Start(ctx, invocation)
+func (runner ProcessRunner) Run(ctx context.Context, invocation Invocation, options RunOptions) (Result, error) {
+	handle, err := runner.Start(ctx, invocation, options)
 	if err != nil {
 		return Result{}, err
 	}
@@ -93,27 +112,43 @@ func (runner ProcessRunner) Run(ctx context.Context, invocation Invocation) (Res
 }
 
 // Run executes a command using the default stateless runner.
-func Run(ctx context.Context, invocation Invocation) (Result, error) {
-	return (ProcessRunner{}).Run(ctx, invocation)
+func Run(ctx context.Context, invocation Invocation, options RunOptions) (Result, error) {
+	return (ProcessRunner{}).Run(ctx, invocation, options)
 }
 
 // Start starts a command using the default stateless runner.
-func Start(ctx context.Context, invocation Invocation) (*Handle, error) {
-	return (ProcessRunner{}).Start(ctx, invocation)
+func Start(ctx context.Context, invocation Invocation, options RunOptions) (*Handle, error) {
+	return (ProcessRunner{}).Start(ctx, invocation, options)
 }
 
 // Start returns only after the process has entered its owned process tree.
-func (ProcessRunner) Start(ctx context.Context, invocation Invocation) (*Handle, error) {
-	return start(ctx, invocation, true)
+func (ProcessRunner) Start(ctx context.Context, invocation Invocation, options RunOptions) (*Handle, error) {
+	return start(ctx, invocation, options, true)
 }
 
-func start(ctx context.Context, invocation Invocation, repairPermissions bool) (*Handle, error) {
+func start(ctx context.Context, invocation Invocation, options RunOptions, repairPermissions bool) (*Handle, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if invocation.Binary == "" {
 		return nil, errors.New("process binary is required")
 	}
+	if options.StopOnIdle && options.IdleTimeout <= 0 {
+		return nil, errors.New("positive idle timeout is required when stop-on-idle is enabled")
+	}
+	if options.IdleTimeout < 0 {
+		return nil, errors.New("idle timeout cannot be negative")
+	}
+	for _, path := range options.ResultFiles {
+		if path == "" {
+			return nil, errors.New("result file paths cannot be empty")
+		}
+	}
+	resultFiles, err := resolveResultFiles(invocation.Directory, options.ResultFiles)
+	if err != nil {
+		return nil, err
+	}
+	options.ResultFiles = resultFiles
 	if invocation.CaptureBytes <= 0 {
 		invocation.CaptureBytes = DefaultCaptureBytes
 	}
@@ -126,7 +161,9 @@ func start(ctx context.Context, invocation Invocation, repairPermissions bool) (
 	if err := validateEnvironment(invocation.Environment); err != nil {
 		return nil, err
 	}
-	state := &execution{snapshot: Snapshot{Name: invocation.Name, State: StateStarting, StartedAt: time.Now().UTC(), ExitCode: -1}, captureLimit: invocation.CaptureBytes}
+	startedAt := time.Now().UTC()
+	state := &execution{snapshot: Snapshot{Name: invocation.Name, State: StateStarting, StartedAt: startedAt, LastActivityAt: &startedAt, ExitCode: -1}, captureLimit: invocation.CaptureBytes}
+	initialFileStates := snapshotFiles(options.ResultFiles)
 	logs, err := openLogs(ctx, invocation.LogBytes, state, environmentEntries(invocation.Environment))
 	if err != nil {
 		return nil, err
@@ -169,9 +206,9 @@ func start(ctx context.Context, invocation Invocation, repairPermissions bool) (
 	if err = state.save(); err != nil {
 		return nil, abortStart(command, tree, logs, state, err)
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-	handle := &Handle{state: state, cancel: cancel, done: make(chan struct{})}
-	go handle.waitProcess(runCtx, command, tree, logs, invocation)
+	runCtx, cancel := context.WithCancelCause(ctx)
+	handle := &Handle{state: state, cancel: cancel, done: make(chan struct{}), fileStates: initialFileStates}
+	go handle.waitProcess(runCtx, command, tree, logs, invocation, options)
 	return handle, nil
 }
 
@@ -193,6 +230,31 @@ type execution struct {
 	captureLimit int
 	metadataPath string
 	lastSave     time.Time
+}
+
+// recordActivity updates activity timestamps and throttles metadata writes.
+func (state *execution) recordActivity(at time.Time, output bool) error {
+	state.mu.Lock()
+	value := at.UTC()
+	state.snapshot.LastActivityAt = &value
+	if output {
+		state.snapshot.LastOutputAt = &value
+	}
+	save := time.Since(state.lastSave) >= time.Second
+	if save {
+		state.lastSave = at
+	}
+	state.mu.Unlock()
+	if save {
+		return state.save()
+	}
+	return nil
+}
+
+func (state *execution) setStopReason(reason StopReason) {
+	state.mu.Lock()
+	state.snapshot.StopReason = reason
+	state.mu.Unlock()
 }
 
 // finish records terminal state without retaining command arguments or credentials.
@@ -226,6 +288,10 @@ func copySnapshot(snapshot Snapshot) Snapshot {
 	if snapshot.LastOutputAt != nil {
 		value := *snapshot.LastOutputAt
 		snapshot.LastOutputAt = &value
+	}
+	if snapshot.LastActivityAt != nil {
+		value := *snapshot.LastActivityAt
+		snapshot.LastActivityAt = &value
 	}
 	return snapshot
 }

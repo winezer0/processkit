@@ -22,7 +22,7 @@ func TestWriterFailureStopsRunningProcess(t *testing.T) {
 			}
 			invocation := regressionInvocation("output-and-wait")
 			invocation.Stdout = writer
-			handle, err := Start(t.Context(), invocation)
+			handle, err := Start(t.Context(), invocation, RunOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}

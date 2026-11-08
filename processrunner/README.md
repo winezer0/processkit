@@ -10,6 +10,8 @@ Go 进程执行包，提供同步执行、异步状态查询、取消与超时�
 go get github.com/winezer0/processkit/processrunner@latest
 ```
 
+需要使用旧版 `Runner` 接口时固定到 `github.com/winezer0/processkit/processrunner@v0.0.3`；新接口不提供旧签名适配层。
+
 本地联调可在消费项目的 `go.mod` 中添加（路径按实际位置调整）：
 
 ```go
@@ -42,7 +44,7 @@ func main() {
         Args:                  []string{"--version"},
         CaptureBytes:          64 << 10,
         RequireCompleteOutput: true,
-    })
+    }, processrunner.RunOptions{})
     if err != nil {
         log.Fatalf("state=%s exit=%d: %v", result.State, result.ExitCode, err)
     }
@@ -68,6 +70,16 @@ Unix 下，`Start` 和 `Run` 会在启动前为目标普通文件添加所有者
 | `RequireCompleteOutput` | 内存捕获不完整时附加 `ErrOutputLimit`；仅磁盘截断不会触发该错误 |
 | `Stdout` / `Stderr` | 可选原始输出 `io.Writer`，独立于捕获和磁盘上限 |
 
+`Run` 和 `Start` 都接收 `RunOptions`。进程输出及配置的结果文件活动始终被观察，并记录最近活动时间；`StopOnIdle` 默认关闭，不会因为静默自动结束进程。
+
+| `RunOptions` 字段 | 行为 |
+| --- | --- |
+| `ResultFiles` | 调用方提供的结果文件路径；相对路径以 `Invocation.Directory` 为基准（为空时以当前目录为基准）；文件创建、大小或修改时间变化会刷新最近活动时间 |
+| `IdleTimeout` | 空闲停止阈值；仅在 `StopOnIdle` 开启时使用，必须为正数 |
+| `StopOnIdle` | 显式开启后，进程日志和所有结果文件持续无变化达到 `IdleTimeout` 时停止进程；默认 `false` |
+
+stdout/stderr 活动由进程管道直接记录，无需传入日志路径。结果文件活动每 250 毫秒轮询；启用空闲停止时，轮询间隔会缩短以匹配较短阈值。
+
 `Start` 会复制参数切片和环境变量 map。`Binary`、`Args`、`Directory` 和 `Environment` 按原样传入执行层；变量展开由调用方在调用前完成。包不调用 shell。包没有标准输入配置；命令标准输入连接空设备，不用于交互式终端会话。
 
 `processrunner` 不解析配置路径或展开变量。需要变量时，由调用方提前解析 `Binary`、`Directory`、参数和环境值；`Directory` 应使用调用方已确认的路径。
@@ -81,7 +93,7 @@ Unix 下，`Start` 和 `Run` 会在启动前为目标普通文件添加所有者
 以下片段假设已有 `ctx` 和 `invocation`，并位于返回 `error` 的函数中：
 
 ```go
-handle, err := processrunner.Start(ctx, invocation)
+handle, err := processrunner.Start(ctx, invocation, processrunner.RunOptions{})
 if err != nil {
     return err
 }
@@ -95,17 +107,17 @@ _ = result
 return err
 ```
 
-- `Start(ctx)` 在进程启动并完成平台进程树绑定后返回；启动失败不返回 Handle，`Run` 此时返回空 `Result` 和错误。
+- `Start(ctx, invocation, options)` 在进程启动并完成平台进程树绑定后返回；启动失败不返回 Handle，`Run` 此时返回空 `Result` 和错误。
 - `Start` 的 context 控制执行生命周期；`Wait(ctx)` 的 context 仅控制本次等待。等待超时返回空 `Result` 和 context 错误，进程可能仍在运行。
 - `Stop` 可重复调用。调用后仍需 `Wait` 或等待 `Done`，确认清理完成。执行 deadline 不保证函数在该时刻立即返回，收尾仍需时间。
 - `Snapshot`、`Stop`、`Wait`、`Done` 可并发使用；结果和快照均为独立副本。完成后的 `Wait` 可重复调用，并优先于已取消的等待 context 返回最终结果。
 - `Done` 在后代清理、输出排空和日志关闭完成后关闭。默认 `ProcessRunner{}` 可并发复用，不保留已完成任务；`Runner` 和 `AsyncRunner` 可用于依赖注入。
 
-快照包含 `Name`、实际命令 `PID`、`State`、`ExitCode`、UTC 起止时间、最近输出时间、`OutputBytes` 和 `Truncated`；`Result` 另含合并输出 `Output`。
+快照包含 `Name`、实际命令 `PID`、`State`、`StopReason`、`ExitCode`、UTC 起止时间、最近输出时间、最近活动时间、`OutputBytes` 和 `Truncated`；`Result` 另含合并输出 `Output`。
 
-状态包括 `starting`、`running`、`success`、`failed`、`canceled`、`timed_out`。终态优先级为超时、取消、其他失败、成功。输出超限或清理错误不会覆盖取消/超时语义。即使命令退出码为 0，输出写入、清理或最终日志关闭/保存失败也可能使整体执行失败；应同时检查错误、状态和退出码。
+状态包括 `starting`、`running`、`success`、`failed`、`canceled`、`timed_out`。`StopReason` 区分 `exited`、`idle`、`deadline` 和 `canceled`。空闲停止是预期结束，状态为 `success` 且不单独返回错误；阶段 deadline 以 `timed_out` 状态和 `deadline` 原因返回，不单独作为执行错误。主动取消仍返回 context 错误。终态优先级为超时、取消、其他失败、成功。输出超限或清理错误不会覆盖取消/超时语义。即使命令退出码为 0，输出写入、清理或最终日志关闭/保存失败也可能使整体执行失败；应同时检查错误、状态、停止原因和退出码。
 
-错误可合并多个原因：用 `errors.Is` 检查 `context.Canceled`、`context.DeadlineExceeded`、`ErrOutputLimit`、`io.ErrShortWrite` 或 `exec.ErrWaitDelay`；用 `errors.As` 检查正常执行路径的 `*exec.ExitError`。取消路径以 context 错误为主，不保证同时返回退出错误。未正常退出时，`ExitCode` 可能为 `-1`。
+阶段执行 deadline（`Start` 的 context 到期）记录为 `timed_out` 状态和 `deadline` 原因，不单独作为执行错误；等待 deadline（`Wait(ctx)` 到期）则返回空结果和 `context.DeadlineExceeded`，且不会停止进程。启动前 context 已取消或到期时，`Start` 直接返回 context 错误。错误可合并多个原因：用 `errors.Is` 检查 `context.Canceled`、`context.DeadlineExceeded`、`ErrOutputLimit`、`io.ErrShortWrite` 或 `exec.ErrWaitDelay`；用 `errors.As` 检查正常执行路径的 `*exec.ExitError`。取消路径以 context 错误为主，不保证同时返回退出错误。未正常退出时，`ExitCode` 可能为 `-1`。
 
 ## 输出与日志
 
@@ -125,7 +137,7 @@ Writer 必须保持可用，直到 `Done` 关闭、`Run` 返回，或 `Wait` 返
 
 ```go
 ctx = processrunner.WithLogDirectory(ctx, "./private-process-logs")
-result, err := processrunner.Run(ctx, invocation)
+result, err := processrunner.Run(ctx, invocation, processrunner.RunOptions{})
 entries, readErr := processrunner.ReadLogs("./private-process-logs", 16<<10)
 ```
 
