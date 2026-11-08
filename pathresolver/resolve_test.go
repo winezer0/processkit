@@ -186,11 +186,15 @@ func TestResolveSkipsInvalidAdditionalBases(t *testing.T) {
 }
 
 func TestResolveWorkingDirectoryAcceptsRelativeOverride(t *testing.T) {
-	workingDirectory := t.TempDir()
 	currentDirectory, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
+	workingDirectory, err := os.MkdirTemp(currentDirectory, "pathresolver-working-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(workingDirectory) })
 	relative, err := filepath.Rel(currentDirectory, workingDirectory)
 	if err != nil {
 		t.Fatal(err)
@@ -429,7 +433,11 @@ func TestResolveExecutableDirectoryWithRelativeOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executableDirectory := t.TempDir()
+	executableDirectory, err := os.MkdirTemp(workingDirectory, "pathresolver-executable-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(executableDirectory) })
 	relativeExecutable, err := filepath.Rel(workingDirectory, filepath.Join(executableDirectory, "app"))
 	if err != nil {
 		t.Fatal(err)
