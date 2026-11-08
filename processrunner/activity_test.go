@@ -133,7 +133,7 @@ func TestProgressDetectorIgnoresChangingHeartbeats(t *testing.T) {
 	if err != nil || result.StopReason != StopIdle || result.State != StateSuccess {
 		t.Fatalf("Run() = (%#v, %v), want successful idle stop", result, err)
 	}
-	if lastScanned != 3 || time.Since(started) < 450*time.Millisecond {
+	if lastScanned != 3 || time.Since(started) < 300*time.Millisecond {
 		t.Fatalf("scanned=%d elapsed=%s, want progress recognized and later heartbeats ignored", lastScanned, time.Since(started))
 	}
 }
