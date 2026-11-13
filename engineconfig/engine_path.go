@@ -11,6 +11,7 @@ import (
 
 // PathEntry configures one required or optional engine file or directory.
 type PathEntry struct {
+	Name     string `yaml:"name"`
 	Path     string `yaml:"path"`
 	Required bool   `yaml:"required"`
 }
@@ -60,14 +61,26 @@ func (entries *PathEntries) UnmarshalYAMLField(node *yaml.Node, field string) er
 	}
 
 	parsed := make(PathEntries, 0, len(node.Content))
+	seenNames := make(map[string]int, len(node.Content))
 	for index, item := range node.Content {
 		entry, err := parsePathEntry(item)
 		if err != nil {
 			var fieldError *EngineFieldError
 			if errors.As(err, &fieldError) {
-				return &EngineFieldError{Field: fmt.Sprintf("%s[%d].%s", prefix, index, fieldError.Field), Err: fieldError.Err}
+				name := pathEntryName(item)
+				return &EngineFieldError{Field: pathEntryField(prefix, index, PathEntry{Name: name}, fieldError.Field), Err: fieldError.Err}
 			}
-			return &EngineFieldError{Field: fmt.Sprintf("%s[%d]", prefix, index), Err: err}
+			return &EngineFieldError{Field: pathEntryField(prefix, index, PathEntry{Name: pathEntryName(item)}, ""), Err: err}
+		}
+		if entry.Name != "" {
+			if firstIndex, exists := seenNames[entry.Name]; exists {
+				firstField := pathEntryField(prefix, firstIndex, parsed[firstIndex], "name")
+				return &EngineFieldError{
+					Field: pathEntryField(prefix, index, entry, "name"),
+					Err:   fmt.Errorf("must be unique; already used by %s", firstField),
+				}
+			}
+			seenNames[entry.Name] = index
 		}
 		parsed = append(parsed, entry)
 	}
@@ -88,6 +101,14 @@ func parsePathEntry(node *yaml.Node) (PathEntry, error) {
 		}
 		seen[key] = true
 		switch key {
+		case "name":
+			if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+				return PathEntry{}, &EngineFieldError{Field: "name", Err: fmt.Errorf("must be a string")}
+			}
+			entry.Name = strings.TrimSpace(value.Value)
+			if entry.Name == "" {
+				return PathEntry{}, &EngineFieldError{Field: "name", Err: fmt.Errorf("must not be empty when specified")}
+			}
 		case "path":
 			if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
 				return PathEntry{}, &EngineFieldError{Field: "path", Err: fmt.Errorf("must be a string")}
@@ -121,6 +142,7 @@ func NormalizePathEntries(entries PathEntries, legacyPath string) PathEntries {
 	}
 	normalized := make(PathEntries, 0, len(entries))
 	for _, entry := range entries {
+		entry.Name = strings.TrimSpace(entry.Name)
 		entry.Path = strings.TrimSpace(entry.Path)
 		if entry.Path != "" {
 			normalized = append(normalized, entry)
@@ -141,10 +163,22 @@ func (entries PathEntries) ValidateField(field string) error {
 		prefix = "path_entries"
 	}
 	var validationErrors []error
+	seenNames := make(map[string]int, len(entries))
 	for index, entry := range entries {
+		name := strings.TrimSpace(entry.Name)
+		if name != "" {
+			if firstIndex, exists := seenNames[name]; exists {
+				validationErrors = append(validationErrors, &EngineFieldError{
+					Field: pathEntryField(prefix, index, entry, "name"),
+					Err:   fmt.Errorf("must be unique; already used by %s", pathEntryField(prefix, firstIndex, entries[firstIndex], "name")),
+				})
+			} else {
+				seenNames[name] = index
+			}
+		}
 		if strings.TrimSpace(entry.Path) == "" {
 			validationErrors = append(validationErrors, &EngineFieldError{
-				Field: fmt.Sprintf("%s[%d].path", prefix, index),
+				Field: pathEntryField(prefix, index, entry, "path"),
 				Err:   fmt.Errorf("must not be empty"),
 			})
 		}
@@ -171,14 +205,14 @@ func (entries PathEntries) CheckPaths(kind PathKind, owner, field string) error 
 				continue
 			}
 			validationErrors = append(validationErrors, &EngineFieldError{
-				Field: fmt.Sprintf("%s[%d].path", prefix, index),
+				Field: pathEntryField(prefix, index, entry, "path"),
 				Err:   fmt.Errorf("%s %s %q: %w", owner, kind, path, err),
 			})
 			continue
 		}
 		if kind == PathKindFile && !info.Mode().IsRegular() {
 			validationErrors = append(validationErrors, &EngineFieldError{
-				Field: fmt.Sprintf("%s[%d].path", prefix, index),
+				Field: pathEntryField(prefix, index, entry, "path"),
 				Err:   fmt.Errorf("%s %s %q is not a regular file", owner, kind, path),
 			})
 		}
@@ -190,4 +224,28 @@ func (entries PathEntries) CheckPaths(kind PathKind, owner, field string) error 
 		}
 	}
 	return errors.Join(validationErrors...)
+}
+
+func pathEntryField(prefix string, index int, entry PathEntry, field string) string {
+	location := fmt.Sprintf("%s[%d]", prefix, index)
+	if name := strings.TrimSpace(entry.Name); name != "" {
+		location = fmt.Sprintf("%s[%q]", prefix, name)
+	}
+	if field == "" {
+		return location
+	}
+	return location + "." + field
+}
+
+func pathEntryName(node *yaml.Node) string {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return ""
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		key, value := node.Content[index], node.Content[index+1]
+		if key.Value == "name" && value.Kind == yaml.ScalarNode && value.Tag == "!!str" {
+			return strings.TrimSpace(value.Value)
+		}
+	}
+	return ""
 }

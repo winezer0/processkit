@@ -26,7 +26,7 @@ func TestResolveEnginePathsExpandsVariablesAndCopiesEnvironment(t *testing.T) {
 		BinaryPath:       binary,
 		ConfigPath:       "${ENGINE_DIR}/config.yaml",
 		CAFile:           "${ENGINE_DIR}/ca.crt",
-		PluginDirs:       engineconfig.PathEntries{{Path: "${ENGINE_DIR}/templates", Required: true}},
+		PluginDirs:       engineconfig.PathEntries{{Name: "templates", Path: "${ENGINE_DIR}/templates", Required: true}},
 		WorkingDirectory: workingDirectory,
 		Environment:      environment,
 	})
@@ -36,7 +36,7 @@ func TestResolveEnginePathsExpandsVariablesAndCopiesEnvironment(t *testing.T) {
 	if paths.BinaryPath != binary || paths.ConfigPath != filepath.Join(engineDir, "config.yaml") || paths.CAFile != filepath.Join(engineDir, "ca.crt") {
 		t.Fatalf("resolved paths = %#v", paths)
 	}
-	if paths.PluginDirs[0].Path != filepath.Join(engineDir, "templates") || paths.PluginsDir != paths.PluginDirs[0].Path {
+	if paths.PluginDirs[0].Name != "templates" || paths.PluginDirs[0].Path != filepath.Join(engineDir, "templates") || paths.PluginsDir != paths.PluginDirs[0].Path {
 		t.Fatalf("resolved plugin paths = %#v", paths.PluginDirs)
 	}
 	if paths.WorkingDirectory != workingDirectory {
@@ -222,5 +222,13 @@ func TestResolvePluginsDirsHonorsRequiredEntries(t *testing.T) {
 	}
 	if _, err := ResolvePluginsDirs(engineconfig.PathEntries{{Path: filepath.Join(root, "required-missing"), Required: true}}, ""); err == nil {
 		t.Fatal("ResolvePluginsDirs() error = nil for a missing required directory")
+	}
+}
+
+func TestResolvePluginsDirsIncludesNameInErrors(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-templates")
+	_, err := ResolvePluginsDirs(engineconfig.PathEntries{{Name: "official", Path: missing, Required: true}}, "")
+	if err == nil || !strings.Contains(err.Error(), `plugins_dir["official"].path`) {
+		t.Fatalf("ResolvePluginsDirs() error = %v, want named path context", err)
 	}
 }

@@ -19,10 +19,14 @@ func TestPathEntriesUnmarshalYAML(t *testing.T) {
 		{name: "empty string", document: "plugins_dir: \"\"\n", want: nil},
 		{name: "string shorthand", document: "plugins_dir: \" ./templates \"\n", want: PathEntries{{Path: "./templates", Required: true}}},
 		{name: "list defaults required", document: "plugins_dir:\n  - path: ./templates\n", want: PathEntries{{Path: "./templates", Required: true}}},
+		{name: "named list defaults required", document: "plugins_dir:\n  - name: templates\n    path: ./templates\n", want: PathEntries{{Name: "templates", Path: "./templates", Required: true}}},
 		{name: "list overrides required", document: "plugins_dir:\n  - path: ./templates\n    required: false\n", want: PathEntries{{Path: "./templates", Required: false}}},
 		{name: "list mixes defaults", document: "plugins_dir:\n  - path: ./templates\n  - path: ./custom\n    required: false\n", want: PathEntries{{Path: "./templates", Required: true}, {Path: "./custom", Required: false}}},
+		{name: "named list mixes required settings", document: "plugins_dir:\n  - name: templates\n    path: ./templates\n  - name: custom-pocs\n    path: ./custom\n    required: false\n", want: PathEntries{{Name: "templates", Path: "./templates", Required: true}, {Name: "custom-pocs", Path: "./custom", Required: false}}},
 		{name: "list item needs path", document: "plugins_dir:\n  - required: false\n", wantErr: "path is required"},
 		{name: "list item needs object", document: "plugins_dir:\n  - ./templates\n", wantErr: "expected object"},
+		{name: "empty name rejected", document: "plugins_dir:\n  - name: \" \"\n    path: ./templates\n", wantErr: "must not be empty"},
+		{name: "duplicate names rejected", document: "plugins_dir:\n  - name: templates\n    path: ./templates\n  - name: templates\n    path: ./custom\n", wantErr: `plugins_dir["templates"].name`},
 		{name: "unsupported map", document: "plugins_dir:\n  path: ./templates\n", wantErr: "expected a path string or list"},
 	}
 	for _, test := range tests {
@@ -95,14 +99,14 @@ func TestPathEntriesCheckPaths(t *testing.T) {
 func TestPathEntriesCheckPathsReportsEveryInvalidEntry(t *testing.T) {
 	root := t.TempDir()
 	entries := PathEntries{
-		{Path: filepath.Join(root, "missing-required-a"), Required: true},
-		{Path: filepath.Join(root, "missing-required-b"), Required: true},
+		{Name: "custom-pocs", Path: filepath.Join(root, "missing-required-a"), Required: true},
+		{Name: "exploit-rules", Path: filepath.Join(root, "missing-required-b"), Required: true},
 	}
 	err := entries.CheckPaths(PathKindDirectory, "nuclei plugins", "plugins_dir")
 	if err == nil {
 		t.Fatal("CheckPaths() error = nil")
 	}
-	for _, field := range []string{"plugins_dir[0].path", "plugins_dir[1].path", "missing-required-a", "missing-required-b"} {
+	for _, field := range []string{`plugins_dir["custom-pocs"].path`, `plugins_dir["exploit-rules"].path`, "missing-required-a", "missing-required-b"} {
 		if !strings.Contains(err.Error(), field) {
 			t.Errorf("CheckPaths() error %q does not identify %s", err, field)
 		}
@@ -111,8 +115,19 @@ func TestPathEntriesCheckPathsReportsEveryInvalidEntry(t *testing.T) {
 
 func TestPathEntriesCheckPathsUsesCallerField(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing-ca.crt")
-	err := (PathEntries{{Path: missing, Required: true}}).CheckPaths(PathKindFile, "xray CA", "ca_file")
-	if err == nil || !strings.Contains(err.Error(), "ca_file[0].path") {
-		t.Fatalf("CheckPaths() error = %v, want ca_file[0].path", err)
+	err := (PathEntries{{Name: "custom-ca", Path: missing, Required: true}}).CheckPaths(PathKindFile, "xray CA", "ca_file")
+	if err == nil || !strings.Contains(err.Error(), `ca_file["custom-ca"].path`) {
+		t.Fatalf("CheckPaths() error = %v, want named ca_file path", err)
+	}
+}
+
+func TestPathEntriesValidateRejectsDuplicateNames(t *testing.T) {
+	entries := PathEntries{
+		{Name: "templates", Path: "./official", Required: true},
+		{Name: "templates", Path: "./custom", Required: false},
+	}
+	err := entries.ValidateField("plugins_dir")
+	if err == nil || !strings.Contains(err.Error(), `plugins_dir["templates"].name`) {
+		t.Fatalf("ValidateField() error = %v, want duplicate named entry error", err)
 	}
 }

@@ -88,9 +88,12 @@ func ResolveEnginePaths(config EnginePathsConfig) (ResolvedPaths, error) {
 	for _, entry := range engineconfig.NormalizePathEntries(config.PluginDirs, config.PluginsDir) {
 		resolved, resolveErr := resolveEnginePath(config.EngineName, "plugins directory", entry.Path, resolveOptions)
 		if resolveErr != nil {
+			if entry.Name != "" {
+				resolveErr = fmt.Errorf("plugins_dir[%q].path: %w", entry.Name, resolveErr)
+			}
 			return ResolvedPaths{}, resolveErr
 		}
-		paths.PluginDirs = append(paths.PluginDirs, engineconfig.PathEntry{Path: resolved, Required: entry.Required})
+		paths.PluginDirs = append(paths.PluginDirs, engineconfig.PathEntry{Name: entry.Name, Path: resolved, Required: entry.Required})
 		if paths.PluginsDir == "" {
 			paths.PluginsDir = resolved
 		}
@@ -202,6 +205,9 @@ func ResolvePluginsDirs(entries engineconfig.PathEntries, legacyPath string) ([]
 		if err != nil {
 			if !entry.Required && errors.Is(err, os.ErrNotExist) {
 				continue
+			}
+			if entry.Name != "" {
+				return nil, fmt.Errorf("plugins_dir[%q].path: %w", entry.Name, err)
 			}
 			return nil, err
 		}

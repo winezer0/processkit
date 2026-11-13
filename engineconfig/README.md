@@ -13,7 +13,7 @@
 | `binary_path` | `BinaryPaths` | 按 `GOOS_GOARCH` 键配置可执行文件路径。 |
 | `config_path` | `ConfigPath` | 引擎配置文件路径。 |
 | `ca_file` | `CAFile` | CA 证书文件路径。 |
-| `plugins_dir` | `PluginDirs` | 插件目录；可配置单个路径或带 `path`、`required` 字段的列表。 |
+| `plugins_dir` | `PluginDirs` | 插件目录；兼容单个字符串路径，也可配置带可选 `name` 和 `required` 字段的列表。 |
 | `environment` | `Environment` | 子进程环境变量映射；不序列化到 JSON。 |
 | `others` | `Others` | 引擎专用的扩展设置。 |
 | `working_directory` | `WorkingDirectory` | 引擎工作目录。 |
@@ -33,9 +33,11 @@ nuclei:
   config_path: "${APP_DIR}/configs/nuclei.yaml"
   working_directory: "${APP_DIR}"
   plugins_dir:
-    - path: "${APP_DIR}/data/nuclei-templates"
+    - name: official-templates
+      path: "${APP_DIR}/data/nuclei-templates"
       required: true
-    - path: "${APP_DIR}/data/local-templates"
+    - name: local-templates
+      path: "${APP_DIR}/data/local-templates"
       required: false
   environment:
     NUCLEI_CACHE: "${ENGINE_DIR}/.cache"
@@ -73,7 +75,7 @@ func currentEngineBinary(config engineconfig.EngineConfig) (string, error) {
 
 `EngineConfig.Validate()` 会聚合超时、二进制键和值、插件目录项以及代理 URL 的格式错误。它不验证二进制或目录是否存在。`EngineFieldError` 保留出错字段名并支持 `errors.Is` / `errors.As`；`PrefixEngineFieldErrors` 可为嵌套配置错误添加字段前缀。
 
-`PathEntries` 的 `NormalizePathEntries` 会清理路径并兼容单个旧式插件目录值。`PathEntries.CheckPaths` 可在解析路径后按文件、目录或任意目标类型检查条目，并遵循 `required` 标记。
+`plugins_dir` 继续接受旧式字符串路径；非空字符串等价于一个必需路径。新配置可使用列表，每项包含 `path`，可选 `name` 和 `required`。未指定 `required` 时默认为 `true`；未指定 `name` 时错误使用列表下标定位。名称在同一列表中必须唯一，命名条目的错误会使用名称定位。`PathEntries.NormalizePathEntries` 会清理路径并兼容旧式字符串值。`PathEntries.CheckPaths` 可在解析路径后按文件、目录或任意目标类型检查条目，并遵循 `required` 标记。
 
 ## 导入路径
 
