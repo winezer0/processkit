@@ -50,6 +50,24 @@ func TestResolveEnginePathsExpandsVariablesAndCopiesEnvironment(t *testing.T) {
 	}
 }
 
+func TestResolveEnginePathsAllowsEmptyWorkingDirectory(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "scanner")
+	if err := os.WriteFile(binary, []byte("scanner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := ResolveEnginePaths(EnginePathsConfig{EngineName: "test", BinaryPath: binary})
+	if err != nil {
+		t.Fatalf("ResolveEnginePaths() error = %v", err)
+	}
+	if paths.WorkingDirectory != "" {
+		t.Fatalf("WorkingDirectory = %q, want empty", paths.WorkingDirectory)
+	}
+	if err := ValidatePaths(paths, "test"); err != nil {
+		t.Fatalf("ValidatePaths() error = %v", err)
+	}
+}
+
 func TestResolveEnginePathsFindsBareBinaryOnPATH(t *testing.T) {
 	root := t.TempDir()
 	binDir := filepath.Join(root, "bin")

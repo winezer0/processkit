@@ -61,9 +61,12 @@ func ResolveEnginePaths(config EnginePathsConfig) (ResolvedPaths, error) {
 	}
 	resolveOptions.Variables = processVariables(binary)
 
-	workingDirectory, err := resolveEnginePath(config.EngineName, "working directory", config.WorkingDirectory, resolveOptions)
-	if err != nil {
-		return ResolvedPaths{}, err
+	workingDirectory := ""
+	if strings.TrimSpace(config.WorkingDirectory) != "" {
+		workingDirectory, err = resolveEnginePath(config.EngineName, "working directory", config.WorkingDirectory, resolveOptions)
+		if err != nil {
+			return ResolvedPaths{}, err
+		}
 	}
 	paths := ResolvedPaths{
 		BinaryPath:       binary,
@@ -137,11 +140,13 @@ func ValidatePaths(paths ResolvedPaths, engineName string) error {
 	if err := pluginDirs.CheckPaths(engineconfig.PathKindDirectory, engineName+" plugins", "plugins_dir"); err != nil {
 		validationErrors = append(validationErrors, err)
 	}
-	if err := requirePath(paths.WorkingDirectory, pathresolver.KindDirectory); err != nil {
-		validationErrors = append(validationErrors, &engineconfig.EngineFieldError{
-			Field: "working_directory",
-			Err:   fmt.Errorf("%s working directory must be a directory: %w", engineName, err),
-		})
+	if strings.TrimSpace(paths.WorkingDirectory) != "" {
+		if err := requirePath(paths.WorkingDirectory, pathresolver.KindDirectory); err != nil {
+			validationErrors = append(validationErrors, &engineconfig.EngineFieldError{
+				Field: "working_directory",
+				Err:   fmt.Errorf("%s working directory must be a directory: %w", engineName, err),
+			})
+		}
 	}
 	return errors.Join(validationErrors...)
 }
